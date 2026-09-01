@@ -1,0 +1,49 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { btn } from "./ui";
+
+interface OpenShift {
+  clockIn: string | Date;
+}
+
+export function ClockInButton({ openShift }: { openShift: OpenShift | null }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/v1/attendance/clock", { method: "POST" });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: { message?: string } };
+        setError(data.error?.message ?? "Could not record attendance");
+        return;
+      }
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <button type="button" onClick={toggle} disabled={busy} className={btn.primary}>
+        {busy
+          ? "Saving…"
+          : openShift
+            ? `Clock out (since ${new Date(openShift.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`
+            : "Clock in"}
+      </button>
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,1 @@
+{"level":"error","requestId":"90e4ed85-eeba-4055-ba84-dfca0860bb07","path":"/api/v1/governance/sweep","err":"Error: Failed query: [object Object] JOIN role_permissions rp ON rp.role_id = ur.role_id WHERE ur.organization_id = 49b7e7ea-e322-4865-90d5-69ccf2b791c7 AND rp.permission = 'governance.manage' LIMIT 10\nparams: "}
