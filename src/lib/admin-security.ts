@@ -1,0 +1,20 @@
+/** Audit actions that belong on the Security center / Admin console strip. */
+export const SECURITY_AUDIT_ACTIONS = [
+  "USER_SUSPENDED",
+  "USER_REACTIVATED",
+  "USER_INVITED",
+  "PERMISSION_GRANTED",
+  "PERMISSION_DENIED",
+  "PERMISSION_REVOKED",
+  "SESSION_REVOKED",
+  "SESSIONS_REVOKED_ALL",
+  "MFA_ENABLED",
+  "MFA_DISABLED",
+  "MFA_FAILED",
+  "LOGIN_FAILED",
+  "ROLE_ASSIGNED",
+  "ROLE_REMOVED",
+  "ACCESS_REVIEWED",
+] as const;
+
+export const SECURITY_AUDIT_QUERY = SECURITY_AUDIT_ACTIONS.join(",");

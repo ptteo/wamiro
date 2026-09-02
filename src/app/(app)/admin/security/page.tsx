@@ -2,9 +2,13 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 
-import { Badge, Card, CardHeader, EmptyState, btn } from "@/components/ui";
+import { AdminKpi, AdminKpiStrip, AdminSection } from "@/components/admin-ui";
+import { Badge, Card, EmptyState, btn } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
+import { SECURITY_AUDIT_QUERY } from "@/lib/admin-security";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
+import { isModuleEnabled } from "@/modules/iam/catalog";
 import { listOrgSessions, getAdminOverview } from "@/modules/admin/service";
 import { SessionRevokeButton } from "@/components/admin-user-actions";
 import { zammadConfig } from "@/modules/integrations/zammad";
@@ -14,11 +18,14 @@ export const metadata = { title: "Security center" };
 
 export default async function SecurityCenterPage() {
   const ctx = await requireAuthPage();
-  if (!can(ctx.access, "users.manage")) {
+  if (!isModuleEnabled(ctx.org.modules, "admin") || !can(ctx.access, "users.manage")) {
     return (
-      <Card>
-        <EmptyState title="Security center" hint="You don't have user management permissions." />
-      </Card>
+      <>
+        <PageHeader title="Security center" />
+        <Card>
+          <EmptyState title="Security center" hint="You don't have user management permissions." />
+        </Card>
+      </>
     );
   }
 
@@ -32,101 +39,79 @@ export default async function SecurityCenterPage() {
   const mfaPct = overview.users.total
     ? Math.round((overview.users.mfaEnabled / overview.users.total) * 100)
     : 0;
-
-  // Security events pulled from the audit trail. Heuristic: any action whose
-  // token mentions login/mfa/session/password/role/permission/2fa.
-  const securityEventActions = [
-    "USER_SUSPENDED",
-    "USER_REACTIVATED",
-    "USER_INVITED",
-    "ROLE_ASSIGNED",
-    "ROLE_REMOVED",
-    "PERMISSION_GRANTED",
-    "PERMISSION_REVOKED",
-    "PERMISSION_DENIED",
-    "SESSION_REVOKED",
-    "SESSIONS_REVOKED_ALL",
-    "MFA_ENROLLED",
-    "MFA_DISABLED",
-  ];
-
-  const sessionsUrl = `/admin/audit?action=${encodeURIComponent(securityEventActions.join(","))}`;
+  const live = sessions.filter((s) => !s.expired);
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight text-primary">Security center</h1>
-        <p className="mt-1 text-sm text-secondary">Authentication, sessions, and security events.</p>
-      </header>
+    <div className="min-w-0 space-y-5">
+      <PageHeader
+        title="Security center"
+        subtitle="Authentication, sessions, and provider status."
+      />
+      <p className="text-[11px] text-tertiary">
+        Session revocation is audited. MFA is self-service at Settings → Security.
+      </p>
 
-      <Card>
-        <CardHeader title="Authentication settings" subtitle="Tenant-wide policies. Read-only in v1; change requests need a security review." />
+      <AdminKpiStrip columns={3}>
+          <AdminKpi
+            label="MFA enrolled"
+            value={`${mfaPct}%`}
+            hint={`${overview.users.mfaEnabled} of ${overview.users.total}`}
+            tone={mfaPct < 50 && overview.users.total > 0 ? "warning" : "success"}
+          />
+          <AdminKpi label="Active sessions" value={live.length} hint="Not yet expired" />
+          <AdminKpi
+            label="Suspended users"
+            value={overview.users.suspended}
+            hint="Cannot sign in"
+            tone={overview.users.suspended > 0 ? "warning" : "neutral"}
+          />
+      </AdminKpiStrip>
+
+      <AdminSection title="Authentication" subtitle="Tenant-wide policies (read-only in v1)">
         <ul className="divide-y divide-border-subtle text-sm">
-          <li className="flex items-center justify-between px-5 py-2.5">
-            <span className="text-tertiary">Password policy</span>
-            <span>Minimum 8 characters; stored as scrypt hash with per-user salt.</span>
+          <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+            <span className="shrink-0 text-tertiary">Password policy</span>
+            <span className="text-primary sm:text-right">Minimum 8 characters; scrypt hash with per-user salt.</span>
           </li>
-          <li className="flex items-center justify-between px-5 py-2.5">
-            <span className="text-tertiary">Session timeout</span>
-            <span>14 days, httpOnly + SameSite=Lax cookie, SHA-256 token storage.</span>
+          <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+            <span className="shrink-0 text-tertiary">Session timeout</span>
+            <span className="text-primary sm:text-right">14 days, httpOnly + SameSite=Lax, SHA-256 token storage.</span>
           </li>
-          <li className="flex items-center justify-between px-5 py-2.5">
-            <span className="text-tertiary">Login protection</span>
-            <span>Per-email + per-IP rate limits on <code className="font-mono text-xs">/auth/login</code>.</span>
+          <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+            <span className="shrink-0 text-tertiary">Login protection</span>
+            <span className="text-primary sm:text-right">Per-email and per-IP rate limits on /auth/login.</span>
           </li>
-          <li className="flex items-center justify-between px-5 py-2.5">
-            <span className="text-tertiary">MFA</span>
-            <span>TOTP (RFC 6238). Self-service enrollment at <Link href="/settings/security" className="text-brand-text hover:underline">Settings → Security</Link>.</span>
+          <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+            <span className="shrink-0 text-tertiary">MFA</span>
+            <span className="text-primary sm:text-right">
+              TOTP (RFC 6238).{" "}
+              <Link href="/settings/security" className="text-brand-text hover:underline">
+                Settings → Security
+              </Link>
+            </span>
           </li>
-        </ul>
-      </Card>
-
-      <Card>
-        <CardHeader
-          title="MFA adoption"
-          subtitle="Use this to drive enrollment campaigns — a higher percentage is better."
-        />
-        <dl className="divide-y divide-border-subtle text-sm">
-          <div className="flex items-center justify-between px-5 py-2.5">
-            <dt className="text-tertiary">Enrolled</dt>
-            <dd className="font-medium">{overview.users.mfaEnabled} of {overview.users.total} ({mfaPct}%)</dd>
-          </div>
-        </dl>
-      </Card>
-
-      <Card>
-        <CardHeader
-          title="SSO"
-          subtitle="Single sign-on is not configured in v1. Future provider: TBD."
-        />
-        <ul className="divide-y divide-border-subtle text-sm">
-          <li className="flex items-center justify-between px-5 py-2.5">
-            <span className="text-tertiary">Provider</span>
+          <li className="flex items-center justify-between py-2.5">
+            <span className="text-tertiary">SSO</span>
             <Badge tone="neutral">Not configured</Badge>
           </li>
-          <li className="flex items-center justify-between px-5 py-2.5">
-            <span className="text-tertiary">Domain verification</span>
-            <span>—</span>
-          </li>
         </ul>
-      </Card>
+      </AdminSection>
 
-      <Card>
-        <CardHeader
-          title="Sessions"
-          subtitle="Active and recent sessions across the tenant. Revocation is audited."
-        />
+      <AdminSection
+        title="Sessions"
+        subtitle="Active and recent sessions. Revocation is audited."
+      >
         {sessions.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-tertiary">No sessions on record.</p>
+          <p className="py-4 text-sm text-tertiary">No sessions on record.</p>
         ) : (
           <ul className="divide-y divide-border-subtle">
             {sessions.slice(0, 50).map((s) => (
-              <li key={s.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm">
+              <li key={s.id} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
-                  <Link href={`/admin/users/${s.userId}`} className="font-medium hover:underline">
+                  <Link href={`/admin/users/${s.userId}`} className="font-medium text-primary hover:underline">
                     {s.userName}
                   </Link>
-                  <p className="truncate text-xs text-tertiary">
+                  <p className="break-all text-xs text-tertiary sm:truncate">
                     {s.userAgent ? shortUA(s.userAgent) : "Unknown device"}
                     {s.ip ? ` · ${s.ip}` : ""}
                     {" · "}created {new Date(s.createdAt).toLocaleString()}
@@ -139,7 +124,7 @@ export default async function SecurityCenterPage() {
                       userId={s.userId}
                       sessionId={s.id}
                       all={false}
-                      className={`${btn.secondary} ${btn.small}`}
+                      className={`${btn.secondary} ${btn.small} ml-auto sm:ml-0`}
                     />
                   )}
                 </div>
@@ -147,33 +132,31 @@ export default async function SecurityCenterPage() {
             ))}
           </ul>
         )}
-      </Card>
+      </AdminSection>
 
-      <Card>
-        <CardHeader
-          title="Security events"
-          subtitle="Authentication, role and permission changes, session revocations."
-          action={
-            <Link href={sessionsUrl} className={`${btn.secondary} ${btn.small}`}>
-              Open in audit
-            </Link>
-          }
-        />
-        <p className="px-5 py-4 text-sm text-tertiary">
-          Use the audit log to see the full history of security-relevant actions.
-          {zammad || frappe ? " Provider connections are listed below." : ""}
-        </p>
+      <AdminSection
+        title="Providers"
+        subtitle="Optional adapters. Core product works without them."
+        action={
+          <Link
+            href={`/admin/audit?action=${encodeURIComponent(SECURITY_AUDIT_QUERY)}`}
+            className={`${btn.secondary} ${btn.small}`}
+          >
+            Security in audit
+          </Link>
+        }
+      >
         <ul className="divide-y divide-border-subtle text-sm">
-          <li className="flex items-center justify-between px-5 py-2.5">
+          <li className="flex items-center justify-between py-2.5">
             <span className="text-tertiary">Frappe HR</span>
             <Badge tone={frappe ? "green" : "neutral"}>{frappe ? "Configured" : "Not configured"}</Badge>
           </li>
-          <li className="flex items-center justify-between px-5 py-2.5">
+          <li className="flex items-center justify-between py-2.5">
             <span className="text-tertiary">Zammad helpdesk</span>
             <Badge tone={zammad ? "green" : "neutral"}>{zammad ? "Configured" : "Not configured"}</Badge>
           </li>
         </ul>
-      </Card>
+      </AdminSection>
     </div>
   );
 }

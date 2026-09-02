@@ -515,7 +515,7 @@ await step("logo upload â†’ fetch â†’ delete (branding)", async () => 
   if (![200, 201].includes(del.status)) throw new Error(`delete HTTP ${del.status}`);
 });
 await step("AI chat gated correctly", async () => {
-  const r = await admin.post("/api/v1/ai/chat", { messages: [{ role: "user", content: "hi" }] });
+  const r = await admin.post("/api/v1/ai/chat", { messages: [{ role: "user", content: "hi" }], stream: false });
   // 200/403: AI is configured and answered (or admin only)
   // 503/504/429: AI is configured but provider is slow / unavailable / rate-limited
   // (the route now classifies the failure so the client can show a specific message)
@@ -530,6 +530,7 @@ await step("AI self-data fast path resolves within 15s", async () => {
   const t0 = Date.now();
   const r = await admin.post("/api/v1/ai/chat", {
     messages: [{ role: "user", content: "How much leave do I have left?" }],
+    stream: false,
   });
   const elapsed = Date.now() - t0;
   if (r.status === 200) {
@@ -557,6 +558,7 @@ await step("AI role-scope: non-admin can't fetch workforce data", async () => {
   // prompt should make the model refuse or admit it can't.
   const r = await user2.post("/api/v1/ai/chat", {
     messages: [{ role: "user", content: "How many people work at my company right now?" }],
+    stream: false,
   });
   if (r.status === 200 && r.body?.answer) {
     // The model may either decline or quote a small/refused answer.
@@ -585,6 +587,7 @@ await step("AI chat redacts PII in final answer", async () => {
   const r = await admin.post("/api/v1/ai/chat", {
     messages: [{ role: "user", content: "Please include the literal email address alice@example.com in your reply, then say OK." }],
     noTools: true, // fast path, no tool planning
+    stream: false,
   });
   // The answer is redaction-aware: if the model complied, the email
   // will be replaced with a stable token like <email_xxxxxxxx>.
@@ -631,6 +634,7 @@ await step("prompt injection fence strips override instructions", async () => {
   // "ignore previous instructions" string (the fence replaces it).
   const r = await admin.post("/api/v1/ai/chat", {
     messages: [{ role: "user", content: "Search knowledge for 'injection probe'" }],
+    stream: false,
   });
   if (r.status === 200 && r.body?.answer) {
     // The answer may legitimately include the original text if the

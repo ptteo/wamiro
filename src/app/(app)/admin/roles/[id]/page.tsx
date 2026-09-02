@@ -2,9 +2,12 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 
-import { Badge, Card, CardHeader, EmptyState, btn } from "@/components/ui";
+import { AdminSection } from "@/components/admin-ui";
+import { Badge, Card, EmptyState } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
+import { isModuleEnabled } from "@/modules/iam/catalog";
 import { getRoleDetail } from "@/modules/admin/service";
 import { ApiError } from "@/lib/errors";
 import { notFound } from "next/navigation";
@@ -17,11 +20,14 @@ export default async function RoleDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const ctx = await requireAuthPage();
-  if (!can(ctx.access, "roles.manage")) {
+  if (!isModuleEnabled(ctx.org.modules, "admin") || !can(ctx.access, "roles.manage")) {
     return (
-      <Card>
-        <EmptyState title="Role detail" hint="You don't have role management permissions." />
-      </Card>
+      <>
+        <PageHeader title="Role" />
+        <Card>
+          <EmptyState title="Role detail" hint="You don't have role management permissions." />
+        </Card>
+      </>
     );
   }
   const { id } = await params;
@@ -33,7 +39,6 @@ export default async function RoleDetailPage({
     throw e;
   }
 
-  // Group permissions by their "family" prefix (e.g. "leave" from "leave.apply").
   const byFamily = new Map<string, { permission: string; scope: string }[]>();
   for (const p of detail.permissions) {
     const family = p.permission.split(".")[0] ?? p.permission;
@@ -44,37 +49,34 @@ export default async function RoleDetailPage({
   const families = [...byFamily.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
   return (
-    <div className="space-y-6">
-      <header>
-        <Link href="/admin/roles" className="text-xs text-tertiary hover:underline">
-          ← Back to roles
-        </Link>
-        <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold tracking-tight text-primary">{detail.role.name}</h1>
-          <Badge tone="brand">{detail.role.key}</Badge>
-          {detail.role.isSystem ? <Badge tone="neutral">System</Badge> : <Badge tone="amber">Custom</Badge>}
-        </div>
-        {detail.role.description ? (
-          <p className="mt-1 text-sm text-secondary">{detail.role.description}</p>
-        ) : null}
-      </header>
+    <div className="min-w-0 space-y-5">
+      <PageHeader
+        title={detail.role.name}
+        subtitle={detail.role.description ?? undefined}
+        breadcrumb={[
+          { label: "Admin", href: "/admin" },
+          { label: "Roles", href: "/admin/roles" },
+        ]}
+      >
+        <Badge tone="brand">{detail.role.key}</Badge>
+        {detail.role.isSystem ? <Badge tone="neutral">System</Badge> : <Badge tone="amber">Custom</Badge>}
+      </PageHeader>
 
-      <Card>
-        <CardHeader
-          title="Permissions"
-          subtitle={`${detail.permissions.length} grant${detail.permissions.length === 1 ? "" : "s"}, grouped by family.`}
-        />
+      <AdminSection
+        title="Permissions"
+        subtitle={`${detail.permissions.length} grant${detail.permissions.length === 1 ? "" : "s"}, grouped by family`}
+      >
         {families.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-tertiary">No permissions in this role.</p>
+          <p className="py-4 text-sm text-tertiary">No permissions in this role.</p>
         ) : (
           <div className="divide-y divide-border-subtle">
             {families.map(([family, perms]) => (
-              <div key={family} className="px-5 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-tertiary">{family}</p>
-                <ul className="mt-1 space-y-0.5">
+              <div key={family} className="py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-tertiary">{family}</p>
+                <ul className="mt-1 space-y-1">
                   {perms.map((p) => (
-                    <li key={p.permission} className="flex items-center justify-between text-sm">
-                      <span className="font-mono text-xs">{p.permission}</span>
+                    <li key={p.permission} className="flex min-w-0 items-start justify-between gap-2 text-sm">
+                      <span className="min-w-0 break-all font-mono text-xs">{p.permission}</span>
                       <Badge tone="neutral">{p.scope}</Badge>
                     </li>
                   ))}
@@ -83,18 +85,17 @@ export default async function RoleDetailPage({
             ))}
           </div>
         )}
-      </Card>
+      </AdminSection>
 
-      <Card>
-        <CardHeader title="Holders" subtitle={`Users with this role. ${detail.holders.length} max shown.`} />
+      <AdminSection title="Holders" subtitle={`${detail.holders.length} shown`}>
         {detail.holders.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-tertiary">No users hold this role.</p>
+          <p className="py-4 text-sm text-tertiary">No users hold this role.</p>
         ) : (
           <ul className="divide-y divide-border-subtle">
             {detail.holders.map((u) => (
-              <li key={u.id} className="flex items-center justify-between gap-3 px-5 py-2.5 text-sm">
+              <li key={u.id} className="flex flex-col gap-2 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3">
                 <Link href={`/admin/users/${u.id}`} className="min-w-0 hover:underline">
-                  <p className="font-medium">{u.name}</p>
+                  <p className="font-medium text-primary">{u.name}</p>
                   <p className="truncate text-xs text-tertiary">{u.email}</p>
                 </Link>
                 <Badge tone={u.status === "active" ? "green" : u.status === "suspended" ? "amber" : "neutral"}>
@@ -104,7 +105,7 @@ export default async function RoleDetailPage({
             ))}
           </ul>
         )}
-      </Card>
+      </AdminSection>
     </div>
   );
 }

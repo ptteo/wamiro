@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { Building2, ChevronDown, Shield } from "lucide-react";
 
 import { cx } from "@/lib/cx";
 import {
   activeWorkspace,
   PLATFORM_WORKSPACE,
   WORKSPACES,
+  sidebarItemCurrent,
   type ShellNavWorkspace,
 } from "@/lib/workspaces";
 
@@ -74,8 +75,7 @@ export function MobileWorkspaceMenu({ workspaces }: { workspaces: ShellNavWorksp
                 </p>
                 {ws.items.map((item) => {
                   const current =
-                    ws.id === activeId &&
-                    (pathname === item.href || pathname.startsWith(item.href + "/"));
+                    ws.id === activeId && sidebarItemCurrent(pathname, ws.items, item.href);
                   return (
                     <Link
                       key={`${ws.id}-${item.href}`}
@@ -96,6 +96,24 @@ export function MobileWorkspaceMenu({ workspaces }: { workspaces: ShellNavWorksp
               </div>
             );
           })}
+          <div className="mt-1 border-t border-border-subtle pt-1">
+            <Link
+              href="/settings/organization"
+              onClick={() => setOpen(false)}
+              className="flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-secondary hover:bg-surface-hover hover:text-primary"
+            >
+              <Building2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+              Organization
+            </Link>
+            <Link
+              href="/settings/security"
+              onClick={() => setOpen(false)}
+              className="flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-secondary hover:bg-surface-hover hover:text-primary"
+            >
+              <Shield className="h-3.5 w-3.5" strokeWidth={1.75} />
+              Security
+            </Link>
+          </div>
         </div>
       ) : null}
     </div>

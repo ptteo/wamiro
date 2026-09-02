@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { Badge, Card, CardHeader, EmptyState, btn } from "./ui";
+import { AdminSection } from "./admin-ui";
+import { Badge, EmptyState, btn } from "./ui";
 
 interface OverrideItem {
   id: string;
@@ -66,26 +67,20 @@ export function AccessReviewsClient({
   const total = overrides.length + elevatedRoles.length;
 
   return (
-    <>
-      <p className="text-sm text-[var(--color-muted)]">
-        Review each grant and decide whether it should stay. “Keep” records the decision in the
-        audit log; revocations take effect immediately.
-      </p>
-
-      {error && (
-        <p role="alert" className="text-sm text-danger">
+    <div className="min-w-0 space-y-5">
+      {error ? (
+        <p role="alert" className="rounded-md bg-danger-subtle px-3 py-2 text-sm text-danger">
           {error}
         </p>
-      )}
+      ) : null}
 
-      <Card>
-        <CardHeader title={`Permission grants (${overrides.length})`} />
+      <AdminSection title={`Permission grants (${overrides.length})`}>
         {overrides.length === 0 ? (
           <EmptyState title="No direct grants to review" />
         ) : (
-          <ul className="divide-y divide-[var(--color-line)]">
+          <ul className="divide-y divide-border-subtle">
             {overrides.map((o) => (
-              <li key={o.id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-sm">
+              <li key={o.id} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center">
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">
                     {o.userName}{" "}
@@ -93,21 +88,21 @@ export function AccessReviewsClient({
                       {o.effect} · {o.permission}
                     </Badge>
                   </p>
-                  <p className="text-xs text-[var(--color-muted)]">
+                  <p className="text-xs text-tertiary">
                     scope {o.scope} · {o.reason}
                     {o.expiresAt
                       ? ` · expires ${new Date(o.expiresAt).toLocaleDateString()}`
                       : " · no expiry"}
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex w-full gap-2 sm:w-auto">
                   <button
                     type="button"
                     disabled={busy !== null}
                     onClick={() =>
                       keep("override", o.id, o.userName, `${o.effect} ${o.permission}@${o.scope}`)
                     }
-                    className={`${btn.success} ${btn.small}`}
+                    className={`${btn.success} ${btn.small} flex-1 sm:flex-none`}
                   >
                     Keep
                   </button>
@@ -115,7 +110,7 @@ export function AccessReviewsClient({
                     type="button"
                     disabled={busy !== null}
                     onClick={() => mutate("/api/v1/admin/overrides", "DELETE", { overrideId: o.id })}
-                    className={`${btn.danger} ${btn.small}`}
+                    className={`${btn.danger} ${btn.small} flex-1 sm:flex-none`}
                   >
                     Revoke
                   </button>
@@ -124,29 +119,28 @@ export function AccessReviewsClient({
             ))}
           </ul>
         )}
-      </Card>
+      </AdminSection>
 
-      <Card>
-        <CardHeader title={`Elevated role assignments (${elevatedRoles.length})`} />
+      <AdminSection title={`Elevated role assignments (${elevatedRoles.length})`}>
         {elevatedRoles.length === 0 ? (
           <EmptyState title="No elevated roles to review" />
         ) : (
-          <ul className="divide-y divide-[var(--color-line)]">
+          <ul className="divide-y divide-border-subtle">
             {elevatedRoles.map((r) => (
               <li
                 key={`${r.userId}-${r.roleId}`}
-                className="flex flex-wrap items-center gap-3 px-5 py-3 text-sm"
+                className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center"
               >
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{r.userName ?? "User"}</p>
                   <Badge tone="amber">{r.roleName}</Badge>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex w-full gap-2 sm:w-auto">
                   <button
                     type="button"
                     disabled={busy !== null}
                     onClick={() => keep("role", r.roleId, r.userName ?? "", `role ${r.roleName}`)}
-                    className={`${btn.success} ${btn.small}`}
+                    className={`${btn.success} ${btn.small} flex-1 sm:flex-none`}
                   >
                     Keep
                   </button>
@@ -158,7 +152,7 @@ export function AccessReviewsClient({
                         roleId: r.roleId,
                       })
                     }
-                    className={`${btn.danger} ${btn.small}`}
+                    className={`${btn.danger} ${btn.small} flex-1 sm:flex-none`}
                   >
                     Remove role
                   </button>
@@ -167,16 +161,11 @@ export function AccessReviewsClient({
             ))}
           </ul>
         )}
-      </Card>
+      </AdminSection>
 
-      {total === 0 && (
-        <Card>
-          <EmptyState
-            title="Access is fully reviewed"
-            hint="Nothing needs attention right now."
-          />
-        </Card>
-      )}
-    </>
+      {total === 0 ? (
+        <EmptyState title="Access is fully reviewed" hint="Nothing needs attention right now." />
+      ) : null}
+    </div>
   );
 }

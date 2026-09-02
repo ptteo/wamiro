@@ -164,8 +164,75 @@
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-html {
-  scrollbar-gutter: stable;
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes wamiro-rise {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+.wamiro-rail-track {
+  animation: wamiro-rise 90s linear infinite;
+}
+
+@keyframes wamiro-shine {
+  from {
+    transform: translateY(120%);
+  }
+  to {
+    transform: translateY(-120%);
+  }
+}
+
+.wamiro-rail {
+  cursor: default;
+}
+
+.wamiro-rail-shine {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 28%;
+  background: linear-gradient(
+    to top,
+    transparent,
+    color-mix(in srgb, var(--brand) 55%, transparent),
+    transparent
+  );
+  opacity: 0;
+}
+
+.wamiro-rail-word {
+  transition:
+    text-shadow 400ms ease,
+    color 400ms ease,
+    filter 400ms ease;
+}
+
+.wamiro-rail:hover .wamiro-rail-track {
+  animation-duration: 28s;
+}
+
+.wamiro-rail:hover .wamiro-rail-word {
+  color: var(--brand-hover);
+  filter: brightness(1.15);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--brand) 80%, transparent);
+}
+
+.wamiro-rail:hover .wamiro-rail-shine {
+  opacity: 1;
+  animation: wamiro-shine 2.4s ease-in-out infinite;
 }
 
 body {
@@ -193,7 +260,18 @@ body {
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
+    animation: none !important;
     transition-duration: 0.01ms !important;
+  }
+  /* Brand rail is a slow ticker; 0.01ms infinite loops are unreadable. */
+  .wamiro-rail-track {
+    animation: wamiro-rise 90s linear infinite !important;
+  }
+  .wamiro-rail:hover .wamiro-rail-shine {
+    animation: wamiro-shine 2.4s ease-in-out infinite !important;
+    opacity: 1 !important;
+  }
+  .wamiro-rail:hover .wamiro-rail-track {
+    animation-duration: 28s !important;
   }
 }

@@ -2,8 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { Shield, ShieldCheck } from "lucide-react";
 
-import { Badge, Card, CardHeader, btn, input } from "./ui";
+import { Badge, btn, input } from "./ui";
 
 export function SecurityClient({ enabled }: { enabled: boolean }) {
   const router = useRouter();
@@ -74,17 +75,32 @@ export function SecurityClient({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <Card>
-      <CardHeader
-        title="Two-factor authentication"
-        action={<Badge tone={enabled ? "green" : "amber"}>{enabled ? "Enabled" : "Off"}</Badge>}
-      />
+    <section className="rounded-lg border border-border-subtle bg-surface">
+      <div className="flex items-start justify-between gap-3 border-b border-border-subtle px-4 py-3 sm:px-5">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-primary">Two-factor authentication</h2>
+          <p className="mt-0.5 text-xs text-tertiary">Authenticator app at sign-in.</p>
+        </div>
+        <Badge tone={enabled ? "success" : "amber"}>{enabled ? "On" : "Off"}</Badge>
+      </div>
+
+      <div className="flex items-start gap-3 px-4 pt-4 sm:px-5">
+        <span
+          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+            enabled ? "bg-success-subtle text-success" : "bg-warning-subtle text-warning"
+          }`}
+        >
+          {enabled ? <ShieldCheck className="h-5 w-5" /> : <Shield className="h-5 w-5" />}
+        </span>
+        <p className="text-sm text-secondary">
+          {enabled
+            ? "This account requires an authenticator code after the password."
+            : "Use Google Authenticator, Authy, or 1Password as a second factor."}
+        </p>
+      </div>
 
       {enabled ? (
-        <form onSubmit={disable} className="space-y-3 px-5 py-4">
-          <p className="text-sm text-[var(--color-muted)]">
-            Enter your password to turn off two-factor authentication.
-          </p>
+        <form onSubmit={disable} className="space-y-3 p-4 sm:p-5">
           <input
             type="password"
             name="password"
@@ -93,25 +109,25 @@ export function SecurityClient({ enabled }: { enabled: boolean }) {
             required
             autoComplete="current-password"
           />
-          <button type="submit" disabled={busy} className={`${btn.danger} ${btn.small}`}>
+          <button type="submit" disabled={busy} className={btn.danger}>
             Disable MFA
           </button>
         </form>
       ) : enrollment ? (
-        <form onSubmit={confirm} className="space-y-3 px-5 py-4">
-          <p className="text-sm">
-            Add this secret to your authenticator app, then enter the current code.
+        <form onSubmit={confirm} className="space-y-3 p-4 sm:p-5">
+          <p className="text-sm text-secondary">
+            Scan the code, or type the secret into your app, then enter the 6-digit code.
           </p>
-          <div className="rounded-lg bg-surface-subtle p-3">
-            {enrollment.qrDataUrl && (
+          <div className="rounded-lg border border-border-subtle bg-surface-subtle p-3">
+            {enrollment.qrDataUrl ? (
               // eslint-disable-next-line @next/next/no-img-element -- data URL from our own API
               <img
                 src={enrollment.qrDataUrl}
                 alt="QR code for authenticator app"
-                className="mx-auto mb-2 h-40 w-40 rounded-lg border border-[var(--color-line)] bg-surface p-1"
+                className="mx-auto mb-2 h-40 w-40 rounded-lg border border-border-default bg-surface p-1"
               />
-            )}
-            <p className="break-all font-mono text-xs text-[var(--color-muted)]">{enrollment.secret}</p>
+            ) : null}
+            <p className="break-all text-center font-mono text-xs text-tertiary">{enrollment.secret}</p>
           </div>
           <input
             name="code"
@@ -122,29 +138,23 @@ export function SecurityClient({ enabled }: { enabled: boolean }) {
             required
             autoFocus
           />
-          <div>
-            <button type="submit" disabled={busy} className={btn.primary}>
-              Verify & enable
-            </button>
-          </div>
+          <button type="submit" disabled={busy} className={btn.primary}>
+            Verify & enable
+          </button>
         </form>
       ) : (
-        <div className="px-5 py-4">
-          <p className="text-sm text-[var(--color-muted)]">
-            Use an authenticator app (Google Authenticator, Authy, 1Password…) as a second factor
-            at sign-in.
-          </p>
-          <button type="button" onClick={beginSetup} disabled={busy} className={`${btn.primary} mt-3`}>
+        <div className="p-4 sm:p-5">
+          <button type="button" onClick={beginSetup} disabled={busy} className={btn.primary}>
             Set up authenticator
           </button>
         </div>
       )}
 
-      {error && (
-        <p role="alert" className="px-5 pb-4 text-sm text-danger">
+      {error ? (
+        <p role="alert" className="px-4 pb-4 text-sm text-danger sm:px-5">
           {error}
         </p>
-      )}
-    </Card>
+      ) : null}
+    </section>
   );
 }

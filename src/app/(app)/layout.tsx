@@ -1,13 +1,11 @@
 import Link from "next/link";
 
 import { AppRail } from "@/components/app-rail";
-import { CommandPalette } from "@/components/command-palette";
 import { LogoutButton } from "@/components/logout-button";
 import {
   ActiveWorkspaceLabel,
   MobileWorkspaceMenu,
 } from "@/components/mobile-nav";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import { requireAuthPage } from "@/lib/page-auth";
 import {
@@ -109,7 +107,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="min-h-dvh">
+    <div className="h-dvh">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:shadow"
@@ -118,59 +116,31 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </a>
 
       {/* fixed rail occupies this strip on desktop */}
-      <div className="flex min-h-dvh md:pl-14 lg:pl-16">
-        <AppRail items={shellWorkspaces} />
+      <div className="flex h-full md:pl-8">
+        <AppRail />
 
         {/* sidebar */}
-        <aside className="hidden w-60 shrink-0 flex-col border-r border-border-default bg-surface px-4 py-5 md:flex">
-          <Link href="/home" className="mb-4 flex items-center gap-2.5 px-1">
-            <span
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white"
-              style={{ background: org.primaryColor }}
-            >
-              {org.name.slice(0, 1).toUpperCase()}
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-primary">
-                {org.name}
-              </span>
-              <span className="block text-[11px] text-tertiary">Powered by Wamiro</span>
-            </span>
-          </Link>
-          <CommandPalette nav={paletteNav} />
-          <WorkspaceSidebar workspaces={shellWorkspaces} />
-          <div className="mt-auto pt-4">
-            <div className="rounded-lg bg-surface-subtle px-3 py-2.5">
-              <p className="truncate text-sm font-medium text-primary">{ctx.user.name}</p>
-              {/* P0 role identity (R&D §12): active operating role always visible */}
-              <p className="truncate text-[11px] font-semibold text-brand-text">
-                {(ctx.roleNames ?? []).join(" · ") || "Member"}
-              </p>
-              <p className="truncate text-xs text-tertiary">{ctx.user.email}</p>
-              <Link
-                href="/settings/organization"
-                className="mt-2 block w-full rounded-lg border border-border-default bg-surface px-3 py-1.5 text-center text-xs font-medium text-secondary transition hover:bg-surface-hover"
-              >
-                Organization
-              </Link>
-              <Link
-                href="/settings/security"
-                className="mt-2 block w-full rounded-lg border border-border-default bg-surface px-3 py-1.5 text-center text-xs font-medium text-secondary transition hover:bg-surface-hover"
-              >
-                Security
-              </Link>
-              <div className="mt-2 flex items-center gap-1.5">
-                <ThemeToggle />
-                <LogoutButton compact />
-              </div>
-            </div>
-          </div>
+        <aside className="hidden w-64 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
+          <WorkspaceSidebar
+            workspaces={shellWorkspaces}
+            paletteNav={paletteNav}
+            org={{
+              name: org.name,
+              primaryColor: org.primaryColor,
+              logoUrl: org.logoUrl,
+            }}
+            user={{
+              name: ctx.user.name,
+              email: ctx.user.email,
+              roleLabel: (ctx.roleNames ?? []).join(" · ") || "Member",
+            }}
+          />
         </aside>
 
         {/* content */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* mobile top bar: org brand + active workspace + menu disclosure */}
-          <header className="flex items-center justify-between gap-2 border-b border-border-default bg-surface px-4 py-3 md:hidden">
+          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-surface px-4 py-3 md:hidden">
             <span className="flex min-w-0 items-center gap-2">
               <span
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white"
@@ -195,7 +165,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </span>
           </header>
 
-          <main id="main" className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
+          <main
+            id="main"
+            className="mx-auto flex w-full min-h-0 min-w-0 max-w-5xl flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6 sm:py-8 has-[[data-fill-workspace]]:max-w-none has-[[data-fill-workspace]]:overflow-hidden has-[[data-fill-workspace]]:px-0 has-[[data-fill-workspace]]:py-0"
+          >
             {children}
           </main>
         </div>

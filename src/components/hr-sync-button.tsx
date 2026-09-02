@@ -11,7 +11,7 @@ export function HrSyncButton({ configured }: { configured: boolean }) {
 
   if (!configured) {
     return (
-      <span className="text-xs text-[var(--color-muted)]">
+      <span className="text-xs text-tertiary">
         Connect Frappe (FRAPPE_BASE_URL / FRAPPE_TOKEN) to enable employee sync.
       </span>
     );

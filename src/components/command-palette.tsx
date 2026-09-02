@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Search } from "lucide-react";
 
 interface NavItem {
   href: string;
@@ -85,10 +86,13 @@ export function CommandPalette({ nav }: { nav: NavItem[] }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex w-full items-center justify-between rounded-lg border border-[var(--color-line)] bg-surface-subtle px-3 py-2 text-sm text-[var(--color-muted)] transition hover:bg-surface-subtle"
+        className="flex h-8 w-full items-center justify-between rounded-md border border-border-subtle bg-surface-subtle/60 px-2.5 text-[13px] text-tertiary transition hover:border-border-default hover:bg-surface-hover hover:text-secondary"
       >
-        <span>Search…</span>
-        <kbd className="rounded border border-[var(--color-line)] bg-surface px-1.5 py-0.5 font-mono text-[10px]">
+        <span className="inline-flex items-center gap-2">
+          <Search className="h-3.5 w-3.5" strokeWidth={1.75} />
+          Search
+        </span>
+        <kbd className="rounded border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-tertiary">
           ⌘K
         </kbd>
       </button>

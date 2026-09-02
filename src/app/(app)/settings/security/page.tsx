@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { SecurityClient } from "@/components/security-client";
-import { Card } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { db } from "@/lib/db";
 import { requireAuthPage } from "@/lib/page-auth";
 import { users } from "@/db/schema";
@@ -19,22 +19,35 @@ export default async function SecurityPage() {
     .limit(1);
 
   return (
-    <div className="mx-auto max-w-xl space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight text-[var(--color-ink)]">Security</h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Protect your account with a second factor.
-        </p>
-      </header>
+    <div className="min-w-0 space-y-5">
+      <PageHeader
+        title="Security"
+        subtitle="How this account signs in, and how long a session lasts."
+      />
 
       <SecurityClient enabled={row?.totpEnabled ?? false} />
 
-      <Card>
-        <div className="px-5 py-4 text-xs leading-relaxed text-[var(--color-muted)]">
-          Sessions expire after 14 days. All sign-ins, MFA changes and sensitive actions are
-          recorded in your organization&apos;s audit log.
+      <section className="rounded-lg border border-border-subtle bg-surface">
+        <div className="border-b border-border-subtle px-4 py-3 sm:px-5">
+          <h2 className="text-sm font-semibold text-primary">Session</h2>
         </div>
-      </Card>
+        <ul className="divide-y divide-border-subtle text-sm">
+          <li className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+            <span className="text-tertiary">Expires after</span>
+            <span className="text-primary">14 days of inactivity</span>
+          </li>
+          <li className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+            <span className="text-tertiary">Cookie</span>
+            <span className="text-primary">httpOnly, SameSite=Lax</span>
+          </li>
+          <li className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+            <span className="text-tertiary">Audit</span>
+            <span className="text-primary sm:text-right">
+              Sign-ins, MFA changes, and sensitive actions are logged for the organization.
+            </span>
+          </li>
+        </ul>
+      </section>
     </div>
   );
 }

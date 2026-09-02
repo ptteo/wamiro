@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Monitor, Moon, Sun } from "lucide-react";
 
 type Theme = "light" | "dark" | "system";
 
@@ -20,7 +21,11 @@ export const themeInitScript = `
 }catch(e){}})();
 `;
 
-export function ThemeToggle() {
+export function ThemeToggle({
+  showLabel = false,
+}: {
+  showLabel?: boolean;
+}) {
   const [theme, setTheme] = useState<Theme>("system");
 
   useEffect(() => {
@@ -39,7 +44,6 @@ export function ThemeToggle() {
     localStorage.setItem("wamiro-theme", next);
     apply(next);
     setTheme(next);
-    // R5 §17 — persist to the user's global preferences (best-effort).
     fetch("/api/v1/me/preferences", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -48,8 +52,9 @@ export function ThemeToggle() {
     }).catch(() => {});
   }
 
-  const label = theme === "system" ? "Theme: system" : theme === "dark" ? "Theme: dark" : "Theme: light";
-  const icon = theme === "dark" ? "◐" : theme === "light" ? "☀" : "◑";
+  const label =
+    theme === "system" ? "Theme: system" : theme === "dark" ? "Theme: dark" : "Theme: light";
+  const Icon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
 
   return (
     <button
@@ -57,9 +62,14 @@ export function ThemeToggle() {
       onClick={cycle}
       title={label}
       aria-label={label}
-      className="rounded-lg border border-border-default px-2 py-1 text-xs text-secondary hover:bg-surface-hover"
+      className={
+        showLabel
+          ? "flex h-9 w-full items-center gap-2 rounded-md px-1.5 text-[13px] font-medium text-primary hover:bg-surface-hover"
+          : "inline-flex h-8 w-8 items-center justify-center rounded-md border border-border-default text-secondary hover:bg-surface-hover hover:text-primary"
+      }
     >
-      {icon}
+      <Icon className="h-4 w-4 shrink-0" strokeWidth={1.75} />
+      {showLabel ? <span>{label}</span> : null}
     </button>
   );
 }

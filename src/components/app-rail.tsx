@@ -1,56 +1,35 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Home, type LucideIcon } from "lucide-react";
+const WORDS = 8;
 
-import { cx } from "@/lib/cx";
-import {
-  PLATFORM_WORKSPACE,
-  resolveWorkspaceId,
-  WORKSPACES,
-  type ShellNavWorkspace,
-} from "@/lib/workspaces";
-
-/** Icon lookup happens client-side so components never cross the RSC boundary. */
-function railIcon(id: string): LucideIcon {
-  return WORKSPACES[id]?.icon ?? (id === PLATFORM_WORKSPACE.id ? PLATFORM_WORKSPACE.icon : Home);
+function Word() {
+  return (
+    <span className="wamiro-rail-word pb-16 text-[10px] font-semibold tracking-[0.22em] text-brand [text-orientation:upright] [writing-mode:vertical-rl]">
+      WAMIRO
+    </span>
+  );
 }
 
 /**
- * D1 §17 rail: icon-only switching between major workspace areas.
- * Receives the viewer's visible workspaces from the shell (already filtered
- * by module + permission) and tracks the active one via the shared resolver,
- * so /approvals highlights Requests and /admin/users highlights Admin.
+ * Desktop-only brand strip: repeating WAMIRO with a gap between words,
+ * looping slowly. Hidden below md.
  */
-export function AppRail({ items }: { items: ShellNavWorkspace[] }) {
-  const pathname = usePathname();
-  const activeId = resolveWorkspaceId(pathname, items) ?? "home";
-
+export function AppRail() {
   return (
     <aside
-      aria-label="Workspace areas"
-      className="fixed inset-y-0 left-0 z-30 hidden w-14 flex-col items-center gap-1 overflow-y-auto border-r border-border-default bg-surface py-4 md:flex lg:w-16"
+      aria-hidden
+      className="wamiro-rail fixed inset-y-0 left-0 z-30 hidden w-8 overflow-hidden border-r border-border-subtle bg-surface md:flex"
     >
-      {items.map(({ id, href, label }) => {
-        const Icon = railIcon(id);
-        const active = id === activeId;
-        return (
-          <Link
-            key={id}
-            href={href}
-            title={label}
-            aria-label={label}
-            aria-current={active ? "page" : undefined}
-            className={cx(
-              "relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-secondary transition hover:bg-surface-hover hover:text-primary",
-              active && "bg-brand-subtle text-brand-text",
-            )}
-          >
-            <Icon className="h-5 w-5" strokeWidth={1.75} />
-          </Link>
-        );
-      })}
+      <div className="relative flex h-full w-full items-start justify-center [mask-image:linear-gradient(to_bottom,transparent,black_10%,black_90%,transparent)]">
+        <div className="wamiro-rail-shine" />
+        <div className="wamiro-rail-track flex shrink-0 flex-col items-center">
+          {[0, 1].map((copy) =>
+            Array.from({ length: WORDS }, (_, i) => (
+              <Word key={`${copy}-${i}`} />
+            )),
+          )}
+        </div>
+      </div>
     </aside>
   );
 }

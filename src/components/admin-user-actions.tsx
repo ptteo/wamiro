@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { ApiError } from "@/lib/errors";
+import { btn } from "./ui";
 
 type Status = "active" | "suspended" | string;
 
@@ -19,10 +19,12 @@ export function UserStatusButton({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const next: Status = currentStatus === "suspended" ? "active" : "suspended";
+  const classes =
+    className ?? (next === "suspended" ? `${btn.danger} w-full sm:w-auto` : `${btn.primary} w-full sm:w-auto`);
   return (
     <button
       type="button"
-      className={className}
+      className={classes}
       disabled={busy}
       onClick={async () => {
         if (next === "suspended") {

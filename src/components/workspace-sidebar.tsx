@@ -2,59 +2,322 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import {
+  Building2,
+  ChevronDown,
+  ChevronUp,
+  LogOut,
+  Shield,
+} from "lucide-react";
 
+import { CommandPalette } from "@/components/command-palette";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { cx } from "@/lib/cx";
 import {
-  activeWorkspace,
+  PLATFORM_WORKSPACE,
+  WORKSPACES,
+  resolveWorkspaceId,
   sidebarIcon,
+  sidebarItemCurrent,
   type ShellNavWorkspace,
 } from "@/lib/workspaces";
 
-/**
- * Contextual sidebar body (D5 §6): shows the entries of whichever workspace
- * best matches the current pathname, falling back to Home. Items arrive
- * pre-filtered by module + permission from the shell; this component only
- * resolves which workspace is active and mirrors aria-current per link.
- */
-export function WorkspaceSidebar({ workspaces }: { workspaces: ShellNavWorkspace[] }) {
+function workspaceIcon(id: string) {
+  return WORKSPACES[id]?.icon ?? (id === PLATFORM_WORKSPACE.id ? PLATFORM_WORKSPACE.icon : null);
+}
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+export function WorkspaceSidebar({
+  workspaces,
+  paletteNav,
+  org,
+  user,
+}: {
+  workspaces: ShellNavWorkspace[];
+  paletteNav: { href: string; label: string }[];
+  org: { name: string; primaryColor: string; logoUrl: string | null };
+  user: { name: string; email: string; roleLabel: string };
+}) {
   const pathname = usePathname();
-  const active = activeWorkspace(pathname, workspaces);
+  const settings = pathname.startsWith("/settings/");
+  const activeId = settings ? null : (resolveWorkspaceId(pathname, workspaces) ?? null);
+  const [openIds, setOpenIds] = useState<Set<string>>(
+    () => new Set(activeId ? [activeId] : []),
+  );
+
+  useEffect(() => {
+    if (!activeId) return;
+    setOpenIds((prev) => {
+      if (prev.has(activeId)) return prev;
+      const next = new Set(prev);
+      next.add(activeId);
+      return next;
+    });
+  }, [activeId]);
+
+  function toggle(id: string) {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   return (
-    <nav aria-label="Workspace sections" className="mt-3 flex-1 space-y-0.5">
-      {active ? (
-        <>
-          <p className="px-2.5 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
-            {active.label}
+    <>
+      <Link href="/home" className="flex min-w-0 items-center gap-2.5 rounded-lg px-1 py-0.5 hover:bg-surface-hover">
+        {org.logoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- tenant logo from our API
+          <img
+            src="/api/v1/org/branding/logo"
+            alt=""
+            className="h-8 w-8 shrink-0 rounded-md object-cover"
+          />
+        ) : (
+          <span
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[13px] font-bold text-white"
+            style={{ background: org.primaryColor }}
+          >
+            {org.name.slice(0, 1).toUpperCase()}
+          </span>
+        )}
+        <span className="min-w-0">
+          <span className="block truncate text-[13px] font-semibold tracking-tight text-primary">
+            {org.name}
+          </span>
+        </span>
+      </Link>
+
+      <div className="mt-3">
+        <CommandPalette nav={paletteNav} />
+      </div>
+
+      <nav aria-label="Modules" className="mt-3 min-h-0 flex-1 overflow-y-auto">
+        {workspaces.map((ws) => {
+          const Icon = workspaceIcon(ws.id);
+          const expanded = openIds.has(ws.id);
+          const inModule = ws.id === activeId;
+          const oneChild = ws.items.length === 1 && ws.items[0];
+          return (
+            <div key={ws.id} className="mb-0.5">
+              {oneChild ? (
+                <Link
+                  href={oneChild.href}
+                  aria-current={inModule ? "page" : undefined}
+                  className={cx(
+                    "flex h-9 items-center gap-2 rounded-md px-2 text-[13px] font-semibold",
+                    inModule
+                      ? "bg-brand-subtle text-brand-text"
+                      : "text-primary hover:bg-surface-hover",
+                  )}
+                >
+                  {Icon ? <Icon className="h-4 w-4 shrink-0" strokeWidth={1.75} /> : null}
+                  <span className="min-w-0 truncate">{ws.label}</span>
+                  {oneChild.badge ? (
+                    <span className="ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-on-brand">
+                      {oneChild.badge > 9 ? "9+" : oneChild.badge}
+                    </span>
+                  ) : null}
+                </Link>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => toggle(ws.id)}
+                    className={cx(
+                      "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-semibold",
+                      inModule
+                        ? "text-brand-text"
+                        : "text-primary hover:bg-surface-hover",
+                    )}
+                  >
+                    {Icon ? <Icon className="h-4 w-4 shrink-0" strokeWidth={1.75} /> : null}
+                    <span className="min-w-0 flex-1 truncate">{ws.label}</span>
+                    <ChevronDown
+                      className={cx(
+                        "h-3.5 w-3.5 shrink-0 text-tertiary transition",
+                        expanded && "rotate-180",
+                      )}
+                      strokeWidth={1.75}
+                    />
+                  </button>
+                  {expanded ? (
+                    <ul className="mb-1 mt-0.5 space-y-px">
+                      {ws.items.map((item) => {
+                        const ItemIcon = sidebarIcon(ws.id, item.href);
+                        const current = sidebarItemCurrent(pathname, ws.items, item.href);
+                        return (
+                          <li key={item.href}>
+                            <Link
+                              href={item.href}
+                              aria-current={current ? "page" : undefined}
+                              className={cx(
+                                "flex h-8 items-center gap-2 rounded-md py-0 pl-2 pr-2 text-[13px] font-medium",
+                                current
+                                  ? "bg-brand-subtle text-brand-text"
+                                  : "text-secondary hover:bg-surface-hover hover:text-primary",
+                              )}
+                            >
+                              <span
+                                className={cx(
+                                  "w-0.5 shrink-0 self-stretch rounded-full",
+                                  current ? "bg-brand" : "bg-transparent",
+                                )}
+                                aria-hidden
+                              />
+                              {ItemIcon ? (
+                                <ItemIcon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+                              ) : null}
+                              <span className="min-w-0 truncate">{item.label}</span>
+                              {item.badge ? (
+                                <span className="ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-on-brand">
+                                  {item.badge > 9 ? "9+" : item.badge}
+                                </span>
+                              ) : null}
+                            </Link>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </nav>
+
+      <AccountMenu
+        user={user}
+        onOrg={pathname.startsWith("/settings/organization")}
+        onSecurity={pathname.startsWith("/settings/security")}
+      />
+    </>
+  );
+}
+
+function AccountMenu({
+  user,
+  onOrg,
+  onSecurity,
+}: {
+  user: { name: string; email: string; roleLabel: string };
+  onOrg: boolean;
+  onSecurity: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    function onPointer(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onPointer);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onPointer);
+    };
+  }, [open]);
+
+  async function logout() {
+    setBusy(true);
+    try {
+      await fetch("/api/v1/auth/logout", { method: "POST" });
+    } catch {
+      /* still leave */
+    }
+    window.location.href = "/login";
+  }
+
+  return (
+    <div ref={rootRef} className="relative mt-auto shrink-0 border-t border-border-subtle pt-2">
+      {open ? (
+        <div
+          role="menu"
+          className="absolute inset-x-0 bottom-full z-20 mb-1 overflow-hidden rounded-lg border border-border-default bg-surface py-1 shadow-lg"
+        >
+          <p className="truncate px-3 py-2 text-[11px] text-tertiary" title={user.email}>
+            {user.email}
           </p>
-          {active.items.map((item) => {
-            const Icon = sidebarIcon(active.id, item.href);
-            const current =
-              pathname === item.href || pathname.startsWith(item.href + "/");
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-current={current ? "page" : undefined}
-                className="flex h-8 items-center gap-2 rounded-md px-2.5 text-[13px] font-medium text-secondary transition hover:bg-surface-hover hover:text-primary aria-[current=page]:bg-brand-subtle aria-[current=page]:text-brand-text"
-              >
-                {Icon ? (
-                  <Icon
-                    className={cx("h-4 w-4 shrink-0", current ? "opacity-100" : "opacity-70")}
-                    strokeWidth={1.75}
-                  />
-                ) : null}
-                <span className="truncate">{item.label}</span>
-                {item.badge ? (
-                  <span className="ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                    {item.badge > 9 ? "9+" : item.badge}
-                  </span>
-                ) : null}
-              </Link>
-            );
-          })}
-        </>
+          <Link
+            href="/settings/organization"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className={cx(
+              "flex h-9 items-center gap-2 px-3 text-[13px] font-medium",
+              onOrg ? "bg-brand-subtle text-brand-text" : "text-primary hover:bg-surface-hover",
+            )}
+          >
+            <Building2 className="h-4 w-4" strokeWidth={1.75} />
+            Organization
+          </Link>
+          <Link
+            href="/settings/security"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className={cx(
+              "flex h-9 items-center gap-2 px-3 text-[13px] font-medium",
+              onSecurity ? "bg-brand-subtle text-brand-text" : "text-primary hover:bg-surface-hover",
+            )}
+          >
+            <Shield className="h-4 w-4" strokeWidth={1.75} />
+            Security
+          </Link>
+          <div className="px-1.5 py-1">
+            <ThemeToggle showLabel />
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={busy}
+            onClick={logout}
+            className="flex h-9 w-full items-center gap-2 px-3 text-[13px] font-medium text-danger hover:bg-danger-subtle disabled:opacity-50"
+          >
+            <LogOut className="h-4 w-4" strokeWidth={1.75} />
+            {busy ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
       ) : null}
-    </nav>
+
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((v) => !v)}
+        className={cx(
+          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover",
+          open && "bg-surface-hover",
+          (onOrg || onSecurity) && "ring-1 ring-brand/30",
+        )}
+      >
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-subtle text-[11px] font-semibold text-brand-text">
+          {initials(user.name)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium text-primary">{user.name}</span>
+          <span className="block truncate text-[11px] text-brand-text">{user.roleLabel}</span>
+        </span>
+        <ChevronUp
+          className={cx("h-3.5 w-3.5 shrink-0 text-tertiary transition", !open && "rotate-180")}
+          strokeWidth={1.75}
+        />
+      </button>
+    </div>
   );
 }

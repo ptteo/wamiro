@@ -50,18 +50,18 @@ export function BarChart({
         ) : (
           points.map((p) => (
             <div key={p.label} className="flex items-center gap-3">
-              <span className="w-14 shrink-0 text-right text-xs tabular-nums text-tertiary">
+              <span className="w-20 shrink-0 text-right text-xs tabular-nums text-tertiary">
                 {p.label}
               </span>
-              <div className="relative h-5 grow bg-surface-subtle">
+              <div className="relative h-5 grow rounded-sm bg-surface-subtle">
                 <div
-                  className="absolute inset-y-0 left-0 bg-brand"
-                  style={{ width: `${Math.round((p.value / max) * 100)}%` }}
+                  className="absolute inset-y-0 left-0 rounded-sm bg-brand"
+                  style={{ width: `${Math.max(0, Math.min(100, Math.round((p.value / max) * 100)))}%` }}
                   role="img"
                   aria-label={`${p.label}: ${p.value}`}
                 />
               </div>
-              <span className="w-8 shrink-0 text-right text-xs tabular-nums text-secondary">
+              <span className="w-10 shrink-0 text-right text-xs tabular-nums text-secondary">
                 {p.value}
               </span>
             </div>

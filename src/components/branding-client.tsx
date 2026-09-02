@@ -27,7 +27,7 @@ export function BrandingClient({ hasLogo, orgName, canManage }: Props) {
         setError(d.error?.message ?? "Action failed");
         return false;
       }
-      window.location.reload(); // pick up new logo everywhere
+      window.location.reload();
       return true;
     } finally {
       setBusy(false);
@@ -35,27 +35,31 @@ export function BrandingClient({ hasLogo, orgName, canManage }: Props) {
   }
 
   return (
-    <div className="space-y-3 px-5 py-4">
-      {error && (
+    <div className="space-y-4 p-4 sm:p-5">
+      {error ? (
         <p role="alert" className="text-sm text-danger">
           {error}
         </p>
-      )}
+      ) : null}
+
       <div className="flex items-center gap-4">
-        <img
-          src={`/api/v1/org/branding/logo?v=${Date.now()}`}
-          alt={`${orgName} logo`}
-          className="h-14 w-14 rounded-lg border border-border-default object-contain"
-        />
-        <div className="text-xs text-secondary">
-          <p>Displayed in the sidebar and across the workspace.</p>
-          <p>PNG, JPEG or WebP · max 2 MB.</p>
-        </div>
+        {hasLogo ? (
+          // eslint-disable-next-line @next/next/no-img-element -- tenant logo from our API
+          <img
+            src={`/api/v1/org/branding/logo?v=${Date.now()}`}
+            alt={`${orgName} logo`}
+            className="h-16 w-16 rounded-xl border border-border-default bg-surface-subtle object-contain"
+          />
+        ) : null}
+        <p className="text-xs leading-relaxed text-secondary">
+          PNG, JPEG or WebP · max 2 MB.
+          {!canManage ? " You can view the logo, but only an administrator can change it." : null}
+        </p>
       </div>
 
-      {canManage && (
+      {canManage ? (
         <form
-          className="flex flex-wrap items-center gap-2"
+          className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center"
           onSubmit={async (e) => {
             e.preventDefault();
             const f = new FormData(e.currentTarget);
@@ -67,23 +71,18 @@ export function BrandingClient({ hasLogo, orgName, canManage }: Props) {
             name="logo"
             accept="image/png,image/jpeg,image/webp"
             required
-            className="rounded-lg border border-border-default px-3 py-1.5 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-surface-subtle file:px-3 file:py-1.5 file:text-xs"
+            className="min-w-0 flex-1 rounded-md border border-border-default px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-surface-subtle file:px-3 file:py-1.5 file:text-xs"
           />
           <button type="submit" disabled={busy} className={btn.primary}>
             Upload
           </button>
-          {hasLogo && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => call("DELETE")}
-              className={`${btn.danger} ${btn.small}`}
-            >
+          {hasLogo ? (
+            <button type="button" disabled={busy} onClick={() => call("DELETE")} className={btn.danger}>
               Remove logo
             </button>
-          )}
+          ) : null}
         </form>
-      )}
+      ) : null}
     </div>
   );
 }

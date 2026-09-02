@@ -88,7 +88,7 @@ export function PageHeader({
             </button>
           ))}
       </div>
-      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
+      {children && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">{children}</div>}
     </header>
   );
 }

@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { Card, CardHeader, btn, input } from "./ui";
+import { AdminSection } from "./admin-ui";
+import { btn, input } from "./ui";
 
 interface Dept {
   id: string;
@@ -25,20 +26,19 @@ export function DepartmentsClient({
   const [error, setError] = useState<string | null>(null);
 
   return (
-    <Card>
-      <CardHeader
-        title={`Departments (${departments.length})`}
-        action={
-          canManage ? (
-            <button type="button" className={`${btn.secondary} ${btn.small}`} onClick={() => setOpen((v) => !v)}>
-              {open ? "Cancel" : "Add department"}
-            </button>
-          ) : null
-        }
-      />
-      {open && (
+    <AdminSection
+      title={`Departments (${departments.length})`}
+      action={
+        canManage ? (
+          <button type="button" className={`${btn.secondary} ${btn.small} w-full sm:w-auto`} onClick={() => setOpen((v) => !v)}>
+            {open ? "Cancel" : "Add department"}
+          </button>
+        ) : null
+      }
+    >
+      {open ? (
         <form
-          className="flex flex-wrap items-end gap-3 border-b border-[var(--color-line)] px-5 py-4"
+          className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end"
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy(true);
@@ -62,30 +62,30 @@ export function DepartmentsClient({
             }
           }}
         >
-          <label className="grow text-sm font-medium">
+          <label className="min-w-0 grow text-sm font-medium">
             Name
             <input name="name" className={`${input} mt-1`} required minLength={2} maxLength={80} placeholder="Engineering" />
           </label>
-          <button type="submit" className={btn.primary} disabled={busy}>
+          <button type="submit" className={`${btn.primary} w-full sm:w-auto`} disabled={busy}>
             Create
           </button>
         </form>
-      )}
-      {error && (
-        <p role="alert" className="px-5 pt-3 text-sm text-danger">
+      ) : null}
+      {error ? (
+        <p role="alert" className="mb-2 text-sm text-danger">
           {error}
         </p>
-      )}
+      ) : null}
       {departments.length === 0 ? (
-        <p className="px-5 py-6 text-center text-sm text-[var(--color-muted)]">
+        <p className="py-6 text-center text-sm text-tertiary">
           No departments yet{canManage ? " — add your first one above." : "."}
         </p>
       ) : (
-        <ul className="divide-y divide-[var(--color-line)]">
+        <ul className="divide-y divide-border-subtle">
           {departments.map((d) => (
-            <li key={d.id} className="flex items-center justify-between px-5 py-3 text-sm">
+            <li key={d.id} className="flex flex-col gap-0.5 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
               <span className="font-medium">{d.name}</span>
-              <span className="text-xs text-[var(--color-muted)]">
+              <span className="text-xs text-tertiary">
                 {d.managerName ? `Lead: ${d.managerName} · ` : ""}
                 {d.memberCount} member{d.memberCount === 1 ? "" : "s"}
               </span>
@@ -93,6 +93,6 @@ export function DepartmentsClient({
           ))}
         </ul>
       )}
-    </Card>
+    </AdminSection>
   );
 }

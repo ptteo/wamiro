@@ -612,7 +612,7 @@ export async function listOrgSessions(ctx: AuthContext) {
 /** Filterable central audit trail (§44–46): q/action/actor filters, paged. */
 export async function listAuditLogs(
   ctx: AuthContext,
-  opts: { q?: string; action?: string; actorId?: string; limit?: number } = {},
+  opts: { q?: string; action?: string; actorId?: string; limit?: number; since?: Date } = {},
 ) {
   const conditions = [orgAuditWhere(ctx)];
   if (opts.q) {
@@ -625,8 +625,16 @@ export async function listAuditLogs(
       )!,
     );
   }
-  if (opts.action) conditions.push(eq(auditLogs.action, opts.action.toUpperCase()));
+  if (opts.action) {
+    const actions = opts.action
+      .split(",")
+      .map((a) => a.trim().toUpperCase())
+      .filter(Boolean);
+    if (actions.length === 1) conditions.push(eq(auditLogs.action, actions[0]!));
+    else if (actions.length > 1) conditions.push(inArray(auditLogs.action, actions));
+  }
   if (opts.actorId) conditions.push(eq(auditLogs.actorUserId, opts.actorId));
+  if (opts.since) conditions.push(sql`${auditLogs.createdAt} >= ${opts.since.toISOString()}`);
 
   return db
     .select({

@@ -1,57 +1,69 @@
-import { DashboardsClient } from "@/components/dashboards-client";
+export const dynamic = "force-dynamic";
+
+import { DashboardsListClient } from "@/components/dashboards-list";
 import { Card, EmptyState } from "@/components/ui";
+import { Content, PageHeader } from "@/components/page-header";
 import { requireAuthPage } from "@/lib/page-auth";
 import { isModuleEnabled } from "@/modules/iam/catalog";
 import { widestScope } from "@/modules/iam/engine";
+import { overview } from "@/modules/analytics/service";
 import { pinnedMetrics } from "@/modules/analytics/dashboards";
-
-export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Dashboards" };
 
+const ALLOWED_SCOPES = new Set(["TEAM", "DEPARTMENT", "COMPANY", "GLOBAL"]);
+
 export default async function DashboardsPage() {
   const ctx = await requireAuthPage();
+  const scope = widestScope(ctx.access, "analytics.view");
   if (
     !isModuleEnabled(ctx.org.modules, "analytics") ||
-    !["TEAM", "DEPARTMENT", "COMPANY", "GLOBAL"].includes(
-      widestScope(ctx.access, "analytics.view") ?? "",
-    )
+    !scope ||
+    !ALLOWED_SCOPES.has(scope)
   ) {
     return (
-      <Card>
-        <EmptyState title="Dashboards unavailable" hint="You need team or company analytics access." />
-      </Card>
+      <Content width="standard">
+        <Card>
+          <EmptyState
+            title="Dashboards unavailable"
+            hint="You need team or company analytics access to use dashboards."
+          />
+        </Card>
+      </Content>
     );
   }
 
-  const { pinned, available } = await pinnedMetrics(ctx);
-  if (!available) {
+  const data = await overview(ctx);
+  if (!data) {
     return (
-      <Card>
-        <EmptyState title="Dashboards unavailable" />
-      </Card>
+      <Content width="standard">
+        <Card>
+          <EmptyState title="No analytics in your scope" />
+        </Card>
+      </Content>
     );
   }
+
+  const pinned = await pinnedMetrics(ctx);
+  const available = {
+    headcount: data.headcount,
+    on_leave_today: data.onLeaveToday,
+    pending_approvals: data.pendingApprovals,
+    approval_latency_hours: Number(data.approvalLatencyHours),
+  };
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight text-primary">Dashboards</h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Pin the metrics you check daily — values respect your access scope
-          ({available.scope === "company" ? "company-wide" : "your team"}).
-        </p>
-      </header>
-
-      <DashboardsClient
-        available={{
-          headcount: available.headcount,
-          on_leave_today: available.onLeaveToday,
-          pending_approvals: available.pendingApprovals,
-          approval_latency_hours: available.approvalLatencyHours,
-        }}
-        pinned={pinned.map((p) => ({ metricId: p.metricId, label: p.label, value: p.value }))}
+    <Content width="wide">
+      <PageHeader
+        title="Dashboards"
+        subtitle="Your personal metric board. Pin what you check every day; unpin what you don't."
       />
-    </div>
+      <DashboardsListClient
+        available={available}
+        pinned={pinned.pinned.map((p) => ({ metricId: p.metricId, value: p.value }))}
+        scopeLabel={data.scopeLabel}
+        scope={data.scope}
+      />
+    </Content>
   );
 }

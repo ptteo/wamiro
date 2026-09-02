@@ -2,27 +2,27 @@ export const dynamic = "force-dynamic";
 
 import { AccessReviewsClient } from "@/components/access-reviews-client";
 import { Card, EmptyState } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { requireAuthPage } from "@/lib/page-auth";
 import { listOverrides, listUsersWithRoles, listTenantRoles } from "@/modules/admin/service";
 import { can } from "@/modules/iam/engine";
+import { isModuleEnabled } from "@/modules/iam/catalog";
 
 export const metadata = { title: "Access Reviews" };
 
-/**
- * Access review (blueprint §58): a live queue of every direct permission
- * grant and elevated role assignment. Decisions are recorded via audit;
- * revocations reuse the existing audited removal paths.
- */
 export default async function AccessReviewsPage() {
   const ctx = await requireAuthPage();
-  if (!can(ctx.access, "roles.manage")) {
+  if (!isModuleEnabled(ctx.org.modules, "admin") || !can(ctx.access, "roles.manage")) {
     return (
-      <Card>
-        <EmptyState
-          title="Access reviews unavailable"
-          hint="You don't have permission to review access."
-        />
-      </Card>
+      <>
+        <PageHeader title="Access reviews" />
+        <Card>
+          <EmptyState
+            title="Access reviews unavailable"
+            hint="You don't have permission to review access."
+          />
+        </Card>
+      </>
     );
   }
 
@@ -33,7 +33,6 @@ export default async function AccessReviewsPage() {
   ]);
 
   const nameById = new Map(tenantRoles.map((r) => [r.id, r.name]));
-  // every non-employee role assignment is an elevated grant worth reviewing
   const elevatedRoles = usersWithRoles.flatMap((u) =>
     u.roles
       .filter((r) => r.key !== "employee")
@@ -45,21 +44,17 @@ export default async function AccessReviewsPage() {
       })),
   );
 
-  const liveOverrides = overrides.filter(
-    (o) => !o.expiresAt || o.expiresAt > new Date(),
-  );
+  const liveOverrides = overrides.filter((o) => !o.expiresAt || o.expiresAt > new Date());
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight text-[var(--color-ink)]">
-          Access Reviews
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Periodically confirm that grants and elevated roles are still justified.
-        </p>
-      </header>
-
+    <div className="min-w-0 space-y-5">
+      <PageHeader
+        title="Access reviews"
+        subtitle="Confirm that grants and elevated roles are still justified."
+      />
+      <p className="text-[11px] text-tertiary">
+        Keep writes the decision to the audit log. Revoke takes effect immediately.
+      </p>
       <AccessReviewsClient
         overrides={liveOverrides.map((o) => ({
           id: o.id,

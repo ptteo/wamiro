@@ -362,10 +362,20 @@ export function activeWorkspace(
   return workspaces.find((w) => w.id === id) ?? null;
 }
 
-/**
- * Icon for a sidebar entry, resolved client-side from the static config so
- * Lucide components never cross the server→client serialization boundary.
- */
+/** Longest-prefix current item — `/admin/users` must not also light up `/admin`. */
+export function sidebarItemCurrent(
+  pathname: string,
+  items: readonly { href: string }[],
+  href: string,
+): boolean {
+  let best = "";
+  for (const item of items) {
+    const matches = pathname === item.href || pathname.startsWith(item.href + "/");
+    if (matches && item.href.length > best.length) best = item.href;
+  }
+  return best === href;
+}
+
 export function sidebarIcon(workspaceId: string, href: string): LucideIcon | undefined {
   const ws = WORKSPACES[workspaceId];
   return ws?.sidebar.find((i) => i.href === href)?.icon ?? ws?.icon;

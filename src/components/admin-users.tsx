@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
-import { Avatar, Badge, Card, CardHeader, EmptyState, btn, input, statusTone } from "./ui";
+import { AdminSection } from "./admin-ui";
+import { Avatar, Badge, EmptyState, btn, input, statusTone } from "./ui";
 
 interface UserRow {
   id: string;
@@ -89,85 +91,87 @@ export function AdminUsersClient({
   }
 
   return (
-    <div className="space-y-6">
-      {error && (
-        <p role="alert" className="rounded-lg bg-danger-subtle px-3 py-2 text-sm text-danger">
+    <div className="min-w-0 space-y-5">
+      {error ? (
+        <p role="alert" className="rounded-md bg-danger-subtle px-3 py-2 text-sm text-danger">
           {error}
         </p>
-      )}
-      {invited && (
-        <div role="status" className="rounded-lg border border-success/30 bg-success-subtle px-4 py-3 text-sm text-success">
+      ) : null}
+      {invited ? (
+        <div role="status" className="rounded-md border border-success/30 bg-success-subtle px-4 py-3 text-sm text-success">
           <p className="font-medium">{invited.email} invited.</p>
           <p className="mt-1">
             One-time password (shown only now):{" "}
-            <code className="rounded bg-surface px-1.5 py-0.5 font-mono">{invited.tempPassword}</code>{" "}
+            <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-primary">{invited.tempPassword}</code>{" "}
             — share it securely; they should change it after first sign-in.
           </p>
         </div>
-      )}
+      ) : null}
 
-      {canManageUsers && <InviteForm roles={roles} busy={busy} onInvite={(r) => setInvited(r)} call={call} />}
+      {canManageUsers ? <InviteForm roles={roles} busy={busy} onInvite={(r) => setInvited(r)} call={call} /> : null}
 
-      <Card>
-        <CardHeader
-          title={`Users (${filteredUsers.length}${filteredUsers.length === users.length ? "" : ` of ${users.length}`})`}
-          action={
-            <div className="flex items-center gap-2">
-              <input
-                aria-label="Search users"
-                placeholder="Name or email…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className={`${input} h-8 w-44`}
-              />
-              <select
-                aria-label="Status filter"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-                className={`${input} h-8 w-32`}
-              >
-                <option value="all">All statuses</option>
-                <option value="active">active</option>
-                <option value="suspended">suspended</option>
-                <option value="invited">invited</option>
-              </select>
-              <select
-                aria-label="Role filter"
-                value={roleFilter}
-                onChange={(e) => setRoleFilter(e.target.value)}
-                className={`${input} h-8 w-40`}
-              >
-                <option value="all">All roles</option>
-                {roles.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-            </div>
-          }
-        />
+      <AdminSection title={`Users (${filteredUsers.length}${filteredUsers.length === users.length ? "" : ` of ${users.length}`})`}>
+        <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <input
+              aria-label="Search users"
+              placeholder="Name or email…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className={`${input} h-9 min-w-0`}
+            />
+            <select
+              aria-label="Status filter"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+              className={`${input} h-9 min-w-0`}
+            >
+              <option value="all">All statuses</option>
+              <option value="active">active</option>
+              <option value="suspended">suspended</option>
+              <option value="invited">invited</option>
+            </select>
+            <select
+              aria-label="Role filter"
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value)}
+              className={`${input} h-9 min-w-0`}
+            >
+              <option value="all">All roles</option>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+        </div>
         {users.length === 0 ? (
           <EmptyState title="No users yet" hint="Invite your first teammate above." />
         ) : filteredUsers.length === 0 ? (
-          <p className="px-5 py-6 text-center text-sm text-tertiary">No users match your filter.</p>
+          <p className="py-6 text-center text-sm text-tertiary">No users match your filter.</p>
         ) : (
-          <ul className="divide-y divide-[var(--color-line)]">
+          <ul className="divide-y divide-border-subtle">
             {filteredUsers.map((u) => (
-              <li key={u.id} className="flex flex-wrap items-center gap-3 px-5 py-3.5">
+              <li key={u.id} className="flex flex-col gap-2 py-3.5 sm:flex-row sm:items-center sm:gap-3">
+                <div className="flex min-w-0 items-center gap-3">
                 <Avatar name={u.name} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{u.name}</p>
-                  <p className="truncate text-xs text-[var(--color-muted)]">
+                  <Link href={`/admin/users/${u.id}`} className="block truncate text-sm font-medium text-primary hover:underline">
+                    {u.name}
+                  </Link>
+                  <p className="truncate text-xs text-tertiary">
                     {u.email}
                     {u.lastLoginAt
                       ? ` · last seen ${new Date(u.lastLoginAt).toLocaleDateString()}`
                       : " · never signed in"}
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-1.5">
+                <Badge tone={statusTone(u.status)}>{u.status}</Badge>
+                </div>
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-auto">
                   {u.roles.map((r) => (
                     <span key={r.id} className="inline-flex items-center gap-1">
                       <Badge tone="brand">{r.name}</Badge>
-                      {canManageRoles && (
+                      {canManageRoles ? (
                         <button
                           type="button"
                           aria-label={`Remove ${r.name} from ${u.name}`}
@@ -177,13 +181,13 @@ export function AdminUsersClient({
                         >
                           ×
                         </button>
-                      )}
+                      ) : null}
                     </span>
                   ))}
-                  {canManageRoles && roles.length > u.roles.length && (
+                  {canManageRoles && roles.length > u.roles.length ? (
                     <select
                       aria-label={`Add role to ${u.name}`}
-                      className={`${input} h-7 w-36 py-0 text-xs`}
+                      className={`${input} h-8 min-w-0 py-0 text-xs sm:w-36`}
                       disabled={busy}
                       defaultValue=""
                       onChange={(e) => {
@@ -203,43 +207,41 @@ export function AdminUsersClient({
                           </option>
                         ))}
                     </select>
-                  )}
+                  ) : null}
                 </div>
-                <Badge tone={statusTone(u.status)}>{u.status}</Badge>
               </li>
             ))}
           </ul>
         )}
-      </Card>
+      </AdminSection>
 
-      {canManageRoles && (
+      {canManageRoles ? (
         <>
           <GrantOverrideForm users={users} permissions={permissions} busy={busy} call={call} />
-          <Card>
-            <CardHeader title={`Permission overrides (${overrides.length})`} />
+          <AdminSection title={`Permission overrides (${overrides.length})`}>
             {overrides.length === 0 ? (
               <EmptyState
                 title="No overrides"
                 hint="Direct grants and denials — including time-limited ones — appear here."
               />
             ) : (
-              <ul className="divide-y divide-[var(--color-line)]">
+              <ul className="divide-y divide-border-subtle">
                 {overrides.map((o) => (
-                  <li key={o.id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-sm">
+                  <li key={o.id} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center">
                     <span className="min-w-0 flex-1">
                       <span className="font-medium">{o.userName}</span>{" "}
-                      <code className="rounded bg-surface-subtle px-1 py-0.5 text-xs">{o.permission}</code>{" "}
+                      <code className="break-all rounded bg-surface-subtle px-1 py-0.5 text-xs">{o.permission}</code>{" "}
                       <Badge tone={o.effect === "deny" ? "red" : "green"}>
                         {o.effect} · {o.scope}
                       </Badge>
-                      <span className="block text-xs text-[var(--color-muted)]">
+                      <span className="block text-xs text-tertiary">
                         {o.reason}
                         {o.expiresAt ? ` · expires ${new Date(o.expiresAt).toLocaleDateString()}` : " · permanent"}
                       </span>
                     </span>
                     <button
                       type="button"
-                      className={`${btn.danger} ${btn.small}`}
+                      className={`${btn.danger} ${btn.small} w-full sm:w-auto`}
                       disabled={busy}
                       onClick={() => call("/api/v1/admin/overrides", "DELETE", { overrideId: o.id })}
                     >
@@ -249,9 +251,9 @@ export function AdminUsersClient({
                 ))}
               </ul>
             )}
-          </Card>
+          </AdminSection>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -270,14 +272,14 @@ function InviteForm({
   const [open, setOpen] = useState(false);
   if (!open) {
     return (
-      <button type="button" className={btn.primary} onClick={() => setOpen(true)}>
+      <button type="button" className={`${btn.primary} w-full sm:w-auto`} onClick={() => setOpen(true)}>
         Invite user
       </button>
     );
   }
   return (
     <form
-      className="grid gap-3 rounded-xl border border-[var(--color-line)] bg-surface p-4 sm:grid-cols-3"
+      className="grid grid-cols-1 gap-3 rounded-lg border border-border-subtle bg-surface p-4 sm:grid-cols-3"
       onSubmit={async (e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
@@ -313,9 +315,12 @@ function InviteForm({
           ))}
         </select>
       </label>
-      <div className="sm:col-span-3">
-        <button type="submit" className={btn.primary} disabled={busy}>
+      <div className="flex flex-col gap-2 sm:col-span-3 sm:flex-row">
+        <button type="submit" className={`${btn.primary} w-full sm:w-auto`} disabled={busy}>
           {busy ? "Inviting…" : "Send invite"}
+        </button>
+        <button type="button" className={`${btn.secondary} w-full sm:w-auto`} onClick={() => setOpen(false)}>
+          Cancel
         </button>
       </div>
     </form>
@@ -336,14 +341,14 @@ function GrantOverrideForm({
   const [open, setOpen] = useState(false);
   if (!open || users.length === 0) {
     return (
-      <button type="button" className={btn.secondary} onClick={() => setOpen(true)} disabled={users.length === 0}>
+      <button type="button" className={`${btn.secondary} w-full sm:w-auto`} onClick={() => setOpen(true)} disabled={users.length === 0}>
         Grant temporary access…
       </button>
     );
   }
   return (
     <form
-      className="grid gap-3 rounded-xl border border-[var(--color-line)] bg-surface p-4 sm:grid-cols-2"
+      className="grid grid-cols-1 gap-3 rounded-lg border border-border-subtle bg-surface p-4 sm:grid-cols-2"
       onSubmit={async (e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
@@ -412,9 +417,12 @@ function GrantOverrideForm({
         Reason (required, audited)
         <input name="reason" className={`${input} mt-1`} required minLength={3} maxLength={300} />
       </label>
-      <div className="sm:col-span-2">
-        <button type="submit" className={btn.primary} disabled={busy}>
+      <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row">
+        <button type="submit" className={`${btn.primary} w-full sm:w-auto`} disabled={busy}>
           {busy ? "Saving…" : "Grant access"}
+        </button>
+        <button type="button" className={`${btn.secondary} w-full sm:w-auto`} onClick={() => setOpen(false)}>
+          Cancel
         </button>
       </div>
     </form>
