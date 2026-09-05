@@ -1,6 +1,10 @@
 export const dynamic = "force-dynamic";
 
 import { BrandingClient } from "@/components/branding-client";
+import { DomainSettings } from "@/components/domain-settings";
+import { SupportAccessClient } from "@/components/support-access-client";
+import { getDomainState } from "@/modules/org/domain";
+import { myImpersonationGrant } from "@/modules/platform/console";
 import { PageHeader } from "@/components/page-header";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
@@ -10,6 +14,8 @@ export const metadata = { title: "Organization" };
 export default async function OrganizationSettingsPage() {
   const ctx = await requireAuthPage();
   const canManage = can(ctx.access, "settings.manage");
+  const domainState = canManage ? await getDomainState(ctx) : null;
+  const grantRow = await myImpersonationGrant(ctx);
 
   return (
     <div className="min-w-0 space-y-5">
@@ -77,6 +83,36 @@ export default async function OrganizationSettingsPage() {
           canManage={canManage}
         />
       </section>
+
+      {canManage && domainState ? (
+        <section className="rounded-lg border border-border-subtle bg-surface">
+          <div className="border-b border-border-subtle px-4 py-3 sm:px-5">
+            <h2 className="text-sm font-semibold text-primary">Your domain</h2>
+            <p className="mt-0.5 text-xs text-tertiary">Run this workspace on your own white-label domain.</p>
+          </div>
+          <DomainSettings
+            customDomain={domainState.customDomain}
+            verified={domainState.verified}
+            cnameTarget={domainState.cnameTarget}
+          />
+        </section>
+      ) : null}
+
+      <SupportAccessClient
+        grant={(() => {
+          const g = grantRow;
+          return g
+            ? {
+                id: g.id,
+                reason: g.reason,
+                operatorLabel: g.operatorLabel,
+                expiresAt: g.expiresAt.toISOString(),
+                createdAt: g.createdAt.toISOString(),
+              }
+            : null;
+        })()}
+        canManage={canManage}
+      />
     </div>
   );
 }

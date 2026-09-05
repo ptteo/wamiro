@@ -1,6 +1,7 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 
-import { AppRail } from "@/components/app-rail";
+import { ImpersonationBanner } from "@/components/impersonation-banner";
 import { LogoutButton } from "@/components/logout-button";
 import {
   ActiveWorkspaceLabel,
@@ -20,6 +21,29 @@ import { approvalCount } from "@/modules/home/service";
 import { unreadCount } from "@/modules/notifications/service";
 import { can, widestScope } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
+import { db } from "@/lib/db";
+import { hashToken } from "@/lib/password";
+import { eq } from "drizzle-orm";
+import { impersonationSessions, users as usersTable, organizations as orgsTable } from "@/db/schema";
+
+import { OPERATOR_RETURN_COOKIE } from "@/lib/impersonation";
+
+/** Best-effort: identify the impersonation window for banner display. */
+async function impersonationTarget(returnToken: string | null): Promise<boolean> {
+  if (!returnToken) return false;
+  try {
+    const [row] = await db
+      .select({ id: impersonationSessions.id })
+      .from(impersonationSessions)
+      .innerJoin(usersTable, eq(usersTable.id, impersonationSessions.operatorUserId))
+      .innerJoin(orgsTable, eq(orgsTable.id, impersonationSessions.organizationId))
+      .where(eq(impersonationSessions.operatorReturnTokenHash, hashToken(returnToken)))
+      .limit(1);
+    return !!row;
+  } catch {
+    return false;
+  }
+}
 
 // every authenticated route is per-user dynamic — never prerendered at build
 export const dynamic = "force-dynamic";
@@ -35,6 +59,9 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireAuthPage();
   const org = ctx.org;
+  // Phase E.2: an impersonation window parks the operator's return session in
+  // this httpOnly cookie — its presence marks every page with the banner.
+  const impersonating = await impersonationTarget((await cookies()).get(OPERATOR_RETURN_COOKIE)?.value ?? null);
   const [unread, pendingApprovalsCount] = await Promise.all([
     unreadCount(ctx),
     can(ctx.access, "requests.approve") || can(ctx.access, "leave.approve")
@@ -76,10 +103,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
     const items: ShellNavItem[] = ws.sidebar
       .filter(itemVisible)
-      .map(({ href, label, badge }) => ({
+      .map(({ href, label, badge, group }) => ({
         href,
         label,
         badge: badge ? badgeCounts[badge] : undefined,
+        group,
       }));
     if (items.length === 0) continue; // nothing reachable inside → hide entirely
 
@@ -108,6 +136,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="h-dvh">
+      {impersonating ? (
+        <ImpersonationBanner orgName={org.name} targetName={ctx.user.name} />
+      ) : null}
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:shadow"
@@ -115,12 +146,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         Skip to content
       </a>
 
-      {/* fixed rail occupies this strip on desktop */}
-      <div className="flex h-full md:pl-8">
-        <AppRail />
-
-        {/* sidebar */}
-        <aside className="hidden w-64 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
+      {/* sidebar — single source of navigation on desktop */}
+      <div className="flex h-full">
+        <aside className="hidden w-72 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
           <WorkspaceSidebar
             workspaces={shellWorkspaces}
             paletteNav={paletteNav}

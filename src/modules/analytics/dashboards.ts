@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { dashboardWidgets } from "@/db/schema";
 import type { AuthContext } from "@/lib/session";
 import { overview, type Overview } from "./service";
+import { dashboardExtras } from "./reports";
 
 export interface PinnedMetric {
   metricId: string;
@@ -16,6 +17,11 @@ const LABELS: Record<string, string> = {
   on_leave_today: "On leave today",
   pending_approvals: "Pending approvals",
   approval_latency_hours: "Avg approval (h)",
+  open_tickets: "Open tickets",
+  sla_compliance_pct: "SLA compliance %",
+  csat_avg: "CSAT avg (1–5)",
+  payroll_cost_ytd: "Payroll cost (YTD)",
+  attrition_12m_pct: "Attrition (12m) %",
 };
 
 export async function pinnedMetrics(
@@ -34,6 +40,7 @@ export async function pinnedMetrics(
     on_leave_today: data.onLeaveToday,
     pending_approvals: data.pendingApprovals,
     approval_latency_hours: data.approvalLatencyHours,
+    ...(await dashboardExtras(ctx)),
   };
 
   return {

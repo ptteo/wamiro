@@ -205,10 +205,10 @@ await step("acknowledgement create â†’ sign", async () => {
   if (![200, 201].includes(s.status)) throw new Error(`sign HTTP ${s.status}`);
 });
 
-// ---------- support (Zammad excluded) ----------
-await step("tickets endpoint reports unconfigured cleanly", async () => {
-  const r = await admin.get("/api/v1/support/tickets");
-  assert.ok(r.status === 400 || r.status === 200, `HTTP ${r.status}`);
+// ---------- support (native, Phase 6 cutover) ----------
+await step("tickets endpoint lists natively", async () => {
+  const r = await admin.get("/api/v1/tickets");
+  assert.ok(r.status === 200, `HTTP ${r.status}`);
 });
 
 // ---------- assets ----------

@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { PwaClient } from "@/components/pwa-client";
 import { themeInitScript } from "@/components/theme-toggle";
 
 const inter = Inter({
@@ -12,6 +13,17 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: { default: "Wamiro", template: "%s · Wamiro" },
   description: "Wamiro — the operating system for modern organizations.",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [{ url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+    apple: "/icons/icon-192.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#4f46e5",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -20,7 +32,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
-      <body>{children}</body>
+      <body>
+        <PwaClient />
+        {children}
+      </body>
     </html>
   );
 }

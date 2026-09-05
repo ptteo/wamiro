@@ -1,5 +1,13 @@
 # Module Excellence Checklist — Support
 
+> **RETIRED (Phase 6 cutover).** This document describes the legacy
+> Zammad-backed support surface (`src/modules/integrations/zammad.ts`,
+> `/support` page, `/api/v1/support/tickets/*`), which was removed when the
+> native tickets module reached feature parity. The active support surface is
+> the native `/tickets` module — SLA engine, service catalog, IT records,
+> groups/routing, email intake, CSAT, and analytics — see
+> `docs/implementation-plan-native-hr-support.md`. Kept for historical record.
+
 Program: module-by-module industry-grade upgrade. Competitor grounding:
 Zendesk / Freshdesk / Intercom (ticket states, priority badges, conversation
 timeline), Jira Service Management (filter chips, status grammar),

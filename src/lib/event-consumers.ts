@@ -48,3 +48,10 @@ onEvent("request.created", async (e) => {
     link: "/approvals",
   });
 });
+
+/** request.approved → service-catalog items flagged auto_create_ticket spawn IT tickets. */
+onEvent("request.approved", async (e) => {
+  if (!e.entityId) return;
+  const { handleApprovedServiceRequest } = await import("@/modules/support-catalog/service");
+  await handleApprovedServiceRequest(e.organizationId, e.entityId);
+});

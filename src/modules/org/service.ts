@@ -13,7 +13,14 @@ import {
   users,
 } from "@/db/schema";
 import { PLATFORM_SUPER_ADMIN, SYSTEM_ROLES } from "@/modules/iam/catalog";
-import { leaveTypes, employees, organizationMemberships } from "@/db/schema";
+import {
+  leaveTypes,
+  employees,
+  organizationMemberships,
+  serviceItems,
+  announcements,
+  knowledgeArticles,
+} from "@/db/schema";
 
 export function slugify(name: string): string {
   return (
@@ -25,6 +32,58 @@ export function slugify(name: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 40) || "org"
   );
+}
+
+export interface SetupStep {
+  key: string;
+  label: string;
+  href: string;
+  done: boolean;
+}
+
+/**
+ * Company setup checklist — drives the admin's onboarding-to-first-value.
+ * Measured server-side; each step deep-links to the page that completes it.
+ * The home page shows this until every step is done.
+ */
+export async function setupChecklist(ctx: AuthContext): Promise<{ done: number; total: number; steps: SetupStep[] }> {
+  const orgId = ctx.user.organizationId;
+  const [memberCount, branding, announceCount, kbCount] = await Promise.all([
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(organizationMemberships)
+      .where(and(eq(organizationMemberships.organizationId, orgId), eq(organizationMemberships.status, "active"))),
+    db.select({ logoUrl: organizations.logoUrl }).from(organizations).where(eq(organizations.id, orgId)).limit(1),
+    db.select({ n: sql<number>`count(*)::int` }).from(announcements).where(eq(announcements.organizationId, orgId)),
+    db.select({ n: sql<number>`count(*)::int` }).from(knowledgeArticles).where(eq(knowledgeArticles.organizationId, orgId)),
+  ]);
+  const steps: SetupStep[] = [
+    {
+      key: "team",
+      label: "Invite your team",
+      href: "/admin/users",
+      done: Number(memberCount[0]?.n ?? 0) >= 2,
+    },
+    {
+      key: "brand",
+      label: "Add your company logo",
+      href: "/settings/organization",
+      done: Boolean(branding[0]?.logoUrl),
+    },
+    {
+      key: "announce",
+      label: "Post your first announcement",
+      href: "/announcements",
+      done: Number(announceCount[0]?.n ?? 0) >= 1,
+    },
+    {
+      key: "kb",
+      label: "Create a knowledge article",
+      href: "/knowledge",
+      done: Number(kbCount[0]?.n ?? 0) >= 1,
+    },
+  ];
+  return { done: steps.filter((s) => s.done).length, total: steps.length, steps };
 }
 
 export async function uniqueSlug(name: string): Promise<string> {
@@ -46,6 +105,46 @@ export interface ProvisionOrgInput {
   adminName: string;
   adminEmail: string;
   adminPasswordHash: string;
+}
+
+/**
+ * Permanently delete a tenant and all of its data.
+ *
+ * Every table except `users` cascades from `organizations.id` (see schema.ts),
+ * so the safe order is: delete the org's users first (sessions cascade from
+ * users), then the organization row itself, which sweeps the rest. The audit
+ * trail has no cascade and survives as a platform-level event.
+ *
+ * Requires an exact-match typed confirmation (`confirm` === org name) as a
+ * hard guard against accidental deletion.
+ */
+export async function deleteOrganization(ctx: AuthContext, confirm: string): Promise<{ deleted: string }> {
+  const [org] = await db
+    .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+    .from(organizations)
+    .where(eq(organizations.id, ctx.user.organizationId))
+    .limit(1);
+  if (!org) throw ApiError.notFound("Organization not found");
+  if (confirm.trim() !== org.name) {
+    throw ApiError.badRequest(`Type \"${org.name}\" exactly to confirm deletion`);
+  }
+
+  await db.transaction(async (tx) => {
+    // Sessions cascade from users; other tenant tables cascade from organizations.
+    await tx.delete(users).where(eq(users.organizationId, org.id));
+    await tx.delete(organizations).where(eq(organizations.id, org.id));
+  });
+
+  await audit({
+    organizationId: null, // survives after the tenant is gone
+    actorUserId: ctx.user.id,
+    action: "ORG_DELETED",
+    entityType: "organization",
+    entityId: org.id,
+    metadata: { name: org.name, slug: org.slug },
+  });
+
+  return { deleted: org.id };
 }
 
 /**
@@ -119,9 +218,19 @@ export async function provisionOrganization(input: ProvisionOrgInput): Promise<{
     });
     await tx.insert(organizationMemberships).values({ userId: user.id, organizationId: org.id });
     await tx.insert(leaveTypes).values([
-      { organizationId: org.id, name: "Annual Leave", annualQuotaDays: "20", paid: true },
-      { organizationId: org.id, name: "Sick Leave", annualQuotaDays: "10", paid: true },
-      { organizationId: org.id, name: "Casual Leave", annualQuotaDays: "6", paid: false },
+      { organizationId: org.id, name: "Annual Leave", annualQuotaDays: "20", paid: true, autoAllocate: true },
+      { organizationId: org.id, name: "Sick Leave", annualQuotaDays: "10", paid: true, autoAllocate: true },
+      { organizationId: org.id, name: "Casual Leave", annualQuotaDays: "6", paid: false, autoAllocate: true },
+    ]);
+
+    // Default service catalog (F2.3) — mirrors migration-0041's backfill for
+    // existing tenants so every org starts with the same requestable services.
+    await tx.insert(serviceItems).values([
+      { organizationId: org.id, name: "Access request", description: "Request access to a system, app or room.", category: "access", icon: "key", expectedDays: 1, approvalRequired: true, autoCreateTicket: false, sortOrder: 10 },
+      { organizationId: org.id, name: "Hardware request", description: "Request a laptop, phone, monitor or peripheral.", category: "hardware", icon: "laptop", expectedDays: 5, approvalRequired: true, autoCreateTicket: true, sortOrder: 20 },
+      { organizationId: org.id, name: "Software request", description: "Request a software license or installation.", category: "software", icon: "download", expectedDays: 2, approvalRequired: true, autoCreateTicket: true, sortOrder: 30 },
+      { organizationId: org.id, name: "Account request", description: "Create, change or close an account.", category: "accounts", icon: "user", expectedDays: 1, approvalRequired: true, autoCreateTicket: false, sortOrder: 40 },
+      { organizationId: org.id, name: "Report a security concern", description: "Report a suspected security issue.", category: "security", icon: "shield", expectedDays: 0, approvalRequired: false, autoCreateTicket: true, sortOrder: 50 },
     ]);
 
     return { orgId: org.id, userId: user.id };

@@ -4,6 +4,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import "@/lib/event-consumers"; // R6 §33 — register domain-event consumers once
 
 import { ApiError } from "./errors";
+import { enforceRateLimit, maybeSweep } from "./ratelimit";
 import {
   loadAuthContext,
   tokenFromRequest,
@@ -72,6 +73,18 @@ export function route(
         if (opts.permission && !can(auth.access, opts.permission)) {
           throw ApiError.forbidden(`Missing permission: ${opts.permission}`);
         }
+
+        // Phase D — platform-grade per-tenant rate limit on mutating calls.
+        // Shared (DB-backed) so it holds across instances. Reads are exempt
+        // to keep the DB write cost off the hot GET path.
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          const orgLimit = Number(process.env.RATE_LIMIT_ORG_PER_MIN ?? 600);
+          await enforceRateLimit("org", auth.user.organizationId, {
+            limit: orgLimit,
+            windowSeconds: 60,
+          });
+          maybeSweep();
+        }
       }
 
       const params = routeCtx?.params ? await routeCtx.params : {};
@@ -91,6 +104,9 @@ export function route(
             : {}),
         }),
       );
+      if (!response.headers.has("x-api-version")) {
+        response.headers.set("x-api-version", "1");
+      }
       return response;
     } catch (e) {
       if (e instanceof ApiError) {
@@ -107,10 +123,12 @@ export function route(
             ...(auth ? { orgId: auth.user.organizationId, userId: auth.user.id } : {}),
           }),
         );
-        return NextResponse.json(
+        const err = NextResponse.json(
           { error: { code: e.code, message: e.message, request_id: requestId } },
           { status: e.status },
         );
+        err.headers.set("x-api-version", "1");
+        return err;
       }
       console.error(JSON.stringify({ level: "error", requestId, path: req.nextUrl.pathname, err: String(e), cause: String((e as { cause?: unknown }).cause ?? "") }));
       return NextResponse.json(

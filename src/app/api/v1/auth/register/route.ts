@@ -4,9 +4,11 @@ import { z } from "zod";
 import { route } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
+import { enforceRateLimit } from "@/lib/ratelimit";
 import { hashPassword } from "@/lib/password";
 import { SESSION_COOKIE, cookieOptions, createSession } from "@/lib/session";
 import { provisionOrganization } from "@/modules/org/service";
+import { sendWelcomeEmail } from "@/lib/mail/activation";
 
 const bodySchema = z.object({
   companyName: z.string().min(2).max(100),
@@ -15,23 +17,15 @@ const bodySchema = z.object({
   password: z.string().min(10).max(200),
 });
 
-// ponytail: in-memory limiter is per-instance; move to shared store only when >1 instance
-const attempts = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(key: string, max: number, windowMs: number) {
-  const now = Date.now();
-  const rec = attempts.get(key);
-  if (!rec || rec.resetAt < now) {
-    attempts.set(key, { count: 1, resetAt: now + windowMs });
-    return;
-  }
-  rec.count += 1;
-  if (rec.count > max) throw ApiError.rateLimited();
-}
-
 export const POST = route(
   async (req: NextRequest) => {
-    // R12 §57: configurable so bulk customer onboarding (100-company programs) is possible; default stays conservative.
-  rateLimit(`register:${req.headers.get("x-forwarded-for") ?? "local"}`, Number(process.env.REGISTER_RATE_LIMIT_PER_HOUR ?? 20), 3_600_000);
+    // Phase D: shared (DB) limiter; configurable so bulk customer onboarding
+    // (100-company programs) is possible — default stays conservative.
+    await enforceRateLimit(
+      "ip",
+      `register:${req.headers.get("x-forwarded-for") ?? "local"}`,
+      { limit: Number(process.env.REGISTER_RATE_LIMIT_PER_HOUR ?? 20), windowSeconds: 3600 },
+    );
 
     const parsed = bodySchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) {
@@ -62,6 +56,9 @@ export const POST = route(
       ip: req.headers.get("x-forwarded-for"),
       userAgent: req.headers.get("user-agent"),
     });
+
+    // Activation (Phase A): nudge the admin into setup when email is wired.
+    void sendWelcomeEmail({ to: email, orgName: companyName, adminName }).catch(() => {});
 
     const res = NextResponse.json({ ok: true, redirect: "/home" }, { status: 201 });
     res.cookies.set(SESSION_COOKIE, session.token, cookieOptions(session.expiresAt));

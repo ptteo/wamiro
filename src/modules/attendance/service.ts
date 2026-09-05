@@ -1,8 +1,14 @@
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, sql } from "drizzle-orm";
 
 import { db, first } from "@/lib/db";
 import type { AuthContext } from "@/lib/session";
-import { attendanceRecords, users } from "@/db/schema";
+import {
+  attendanceRecords,
+  holidays,
+  shiftAssignments,
+  shiftTypes,
+  users,
+} from "@/db/schema";
 import { widestScope } from "@/modules/iam/engine";
 
 export async function getOpenRecord(ctx: AuthContext) {
@@ -20,8 +26,13 @@ export async function getOpenRecord(ctx: AuthContext) {
   return row ?? null;
 }
 
-/** Toggle clock in/out for the current user. */
+/**
+ * Toggle clock in/out for the current user. Clock-in attaches the shift
+ * type the employee is rostered for today (if any) so reports can compare
+ * planned vs actual hours.
+ */
 export async function clockToggle(ctx: AuthContext) {
+  const orgId = ctx.user.organizationId;
   const open = await getOpenRecord(ctx);
   if (open) {
     const closed = first(
@@ -33,10 +44,27 @@ export async function clockToggle(ctx: AuthContext) {
     );
     return { action: "clock_out" as const, record: closed };
   }
+  const now = new Date();
+  const todayIso = now.toISOString().slice(0, 10);
+  const [assignment] = await db
+    .select({ shiftTypeId: shiftAssignments.shiftTypeId })
+    .from(shiftAssignments)
+    .where(
+      and(
+        eq(shiftAssignments.organizationId, orgId),
+        eq(shiftAssignments.employeeUserId, ctx.user.id),
+        eq(shiftAssignments.date, todayIso),
+      ),
+    )
+    .limit(1);
   const opened = first(
     await db
       .insert(attendanceRecords)
-      .values({ organizationId: ctx.user.organizationId, userId: ctx.user.id })
+      .values({
+        organizationId: orgId,
+        userId: ctx.user.id,
+        shiftTypeId: assignment?.shiftTypeId ?? null,
+      })
       .returning(),
   );
   return { action: "clock_in" as const, record: opened };
@@ -142,7 +170,19 @@ export interface MyAttendanceSummary {
   /** Days worked this week (0..7). */
   daysWorkedThisWeek: number;
   /** 7-day cell array, oldest to newest. */
-  week: { date: string; minutes: number; isToday: boolean; hasShift: boolean }[];
+  week: {
+    date: string;
+    minutes: number;
+    isToday: boolean;
+    /** True when the person clocked in that day. */
+    hasShift: boolean;
+    /** Company holiday that day (no clock-in required). */
+    isHoliday: boolean;
+    holidayName: string | null;
+    /** Rostered shift that day, if any. */
+    scheduled: boolean;
+    shiftLabel: string | null;
+  }[];
   /** Most recent 20 records, ordered newest first. */
   history: AttendanceRow[];
   /** Direct reports currently clocked in (for managers). */
@@ -221,6 +261,40 @@ export async function myAttendanceSummary(ctx: AuthContext, historyLimit = 20): 
     weekMap.set(r.d, Number(r.minutes));
   }
   const todayIso = startOfDay.toISOString().slice(0, 10);
+
+  // Holidays + rostered shifts inside the week (for the same person)
+  const [holidayRows, shiftRows] = await Promise.all([
+    db
+      .select({ name: holidays.name, date: holidays.date })
+      .from(holidays)
+      .where(
+        and(
+          eq(holidays.organizationId, orgId),
+          gte(holidays.date, monday.toISOString().slice(0, 10)),
+          sql`${holidays.date} <= ${sundayEnd.toISOString().slice(0, 10)}`,
+        ),
+      ),
+    db
+      .select({
+        date: shiftAssignments.date,
+        name: shiftTypes.name,
+        startMinutes: shiftTypes.startMinutes,
+        endMinutes: shiftTypes.endMinutes,
+      })
+      .from(shiftAssignments)
+      .innerJoin(shiftTypes, eq(shiftTypes.id, shiftAssignments.shiftTypeId))
+      .where(
+        and(
+          eq(shiftAssignments.organizationId, orgId),
+          eq(shiftAssignments.employeeUserId, me),
+          gte(shiftAssignments.date, monday.toISOString().slice(0, 10)),
+          lte(shiftAssignments.date, sundayEnd.toISOString().slice(0, 10)),
+        ),
+      ),
+  ]);
+  const holidayMap = new Map(holidayRows.map((h) => [String(h.date), h.name]));
+  const shiftMap = new Map(shiftRows.map((s) => [String(s.date), s]));
+
   const week: MyAttendanceSummary["week"] = [];
   let weekMinutes = 0;
   let daysWorkedThisWeek = 0;
@@ -229,9 +303,24 @@ export async function myAttendanceSummary(ctx: AuthContext, historyLimit = 20): 
     d.setUTCDate(monday.getUTCDate() + i);
     const iso = d.toISOString().slice(0, 10);
     const mins = weekMap.get(iso) ?? 0;
-    if (mins > 0) daysWorkedThisWeek += 1;
+    const holidayName = holidayMap.get(iso) ?? null;
+    const isHoliday = holidayName !== null;
+    const shift = shiftMap.get(iso);
+    // A company holiday is not a working day; only non-holiday days count.
+    if (mins > 0 && !isHoliday) daysWorkedThisWeek += 1;
     weekMinutes += mins;
-    week.push({ date: iso, minutes: mins, isToday: iso === todayIso, hasShift: mins > 0 });
+    week.push({
+      date: iso,
+      minutes: mins,
+      isToday: iso === todayIso,
+      hasShift: mins > 0,
+      isHoliday,
+      holidayName,
+      scheduled: shift !== undefined,
+      shiftLabel: shift
+        ? `${shift.name} ${fmtMinutes(shift.startMinutes)}–${fmtMinutes(shift.endMinutes)}`
+        : null,
+    });
   }
 
   // 4. Today minutes = today's cell (already computed)
@@ -289,6 +378,11 @@ export async function myAttendanceSummary(ctx: AuthContext, historyLimit = 20): 
     teamNow,
     orgClockedInNow: Number(row?.c ?? 0),
   };
+}
+
+function fmtMinutes(minutes: number): string {
+  const m = Math.max(0, Math.min(1439, minutes));
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
 /** 0..1 — fraction of the way through the typical 8-hour workday. */

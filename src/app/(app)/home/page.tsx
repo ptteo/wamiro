@@ -23,6 +23,7 @@ import { Avatar, Badge, Card, CardHeader, EmptyState, Stat } from "@/components/
 import { ClockInButton } from "@/components/clock-button";
 import { requireAuthPage } from "@/lib/page-auth";
 import { homeSummary } from "@/modules/home/service";
+import { setupChecklist, type SetupStep } from "@/modules/org/service";
 import { can } from "@/modules/iam/engine";
 import type {
   ActivityItem,
@@ -125,12 +126,77 @@ const ACT_VERB: Record<ActivityKind, string> = {
   recognition_received: "received recognition from",
 };
 
+// ── company setup card ────────────────────────────────────────────
+function SetupChecklistCard({
+  steps,
+  done,
+  total,
+}: {
+  steps: SetupStep[];
+  done: number;
+  total: number;
+}) {
+  const pct = Math.round((done / total) * 100);
+  return (
+    <section className="rounded-xl border border-border-default bg-surface p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
+            <Sparkles className="h-4 w-4 text-brand" strokeWidth={1.75} />
+            Set up {""}
+            <span className="font-medium text-tertiary">· {done} of {total} done</span>
+          </h2>
+          <p className="mt-0.5 text-xs text-tertiary">
+            Finish these steps to get your company workspace ready for everyone.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="hidden h-1.5 w-36 overflow-hidden rounded-full bg-border-subtle sm:block" aria-hidden>
+            <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${Math.max(6, pct)}%` }} />
+          </div>
+          <Link
+            href="/setup"
+            className="inline-flex h-8 items-center gap-1 rounded-lg bg-brand px-3 text-xs font-semibold text-on-brand transition hover:opacity-90"
+          >
+            Continue setup
+            <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} />
+          </Link>
+        </div>
+      </div>
+      <ol className="mt-3 grid gap-1.5 sm:grid-cols-2">
+        {steps.map((step) => (
+          <li key={step.key}>
+            <Link
+              href={step.href}
+              className="flex items-center gap-2.5 rounded-lg border border-border-subtle px-3 py-2 text-sm transition hover:border-brand/40 hover:bg-surface-hover"
+            >
+              <span
+                className={[
+                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold",
+                  step.done ? "bg-success-subtle text-success" : "bg-surface-subtle text-tertiary",
+                ].join(" ")}
+                aria-hidden
+              >
+                {step.done ? <Check className="h-3 w-3" strokeWidth={2.5} /> : null}
+              </span>
+              <span className={step.done ? "text-tertiary line-through" : "text-primary"}>{step.label}</span>
+              <ChevronRight className="ml-auto h-3.5 w-3.5 text-tertiary" strokeWidth={1.75} />
+            </Link>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 // ── page ───────────────────────────────────────────────────────────
 export default async function HomePage() {
   const ctx = await requireAuthPage();
   const s = await homeSummary(ctx);
   const personas: Persona[] = s.personas;
   const canSee = (p: string) => can(ctx.access, p);
+  const isSetupAdmin = can(ctx.access, "settings.manage") || can(ctx.access, "users.manage");
+  const setup = isSetupAdmin ? await setupChecklist(ctx) : null;
 
   const firstName = ctx.user.name.split(/\s+/)[0] ?? ctx.user.name;
   const now = new Date();
@@ -153,13 +219,13 @@ export default async function HomePage() {
     { href: "/leave", label: "Leave" },
     { href: "/finance/expenses", label: "Expense" },
     { href: "/workplace", label: "Room" },
-    { href: "/support", label: "Help" },
+    { href: "/tickets", label: "Help" },
     { href: "/tasks", label: "Task" },
   ].filter((a) => {
     if (a.href === "/leave") return canSee("leave.apply");
     if (a.href === "/finance/expenses") return canSee("finance.submit");
     if (a.href === "/workplace") return canSee("workplace.book");
-    if (a.href === "/support") return canSee("tickets.create");
+    if (a.href === "/tickets") return canSee("tickets.create");
     if (a.href === "/tasks") return canSee("tasks.create");
     return false;
   });
@@ -236,6 +302,10 @@ export default async function HomePage() {
 
   return (
     <div className="mx-auto w-full max-w-[1200px] space-y-8">
+      {/* ── Company setup checklist (admins only, until complete) ─────── */}
+      {setup && setup.done < setup.total ? (
+        <SetupChecklistCard steps={setup.steps} done={setup.done} total={setup.total} />
+      ) : null}
       {/* ── Greeting row ───────────────────────────────────────────── */}
       <header className="flex flex-wrap items-center gap-4">
         <Avatar name={ctx.user.name} className="!h-11 !w-11 text-sm" />

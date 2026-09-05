@@ -49,6 +49,10 @@ export const PERMISSION_GROUPS: { group: string; permissions: string[] }[] = [
     ],
   },
   {
+    group: "Payroll",
+    permissions: ["payroll.view_self", "payroll.manage"],
+  },
+  {
     group: "People Ops",
     permissions: [
       "recruitment.manage",
@@ -77,7 +81,12 @@ export const PERMISSION_GROUPS: { group: string; permissions: string[] }[] = [
       "attendance.view_department",
       "attendance.view_company",
       "attendance.manage",
+      "attendance.correct",
     ],
+  },
+  {
+    group: "Shifts",
+    permissions: ["shifts.view", "shifts.manage"],
   },
   {
     group: "Leave",
@@ -113,7 +122,11 @@ export const PERMISSION_GROUPS: { group: string; permissions: string[] }[] = [
   },
   {
     group: "Tickets",
-    permissions: ["tickets.create", "tickets.manage"],
+    permissions: ["tickets.create", "tickets.manage", "tickets.sla_view"],
+  },
+  {
+    group: "Service Catalog",
+    permissions: ["services.manage"],
   },
   {
     group: "Assets",
@@ -206,6 +219,8 @@ export interface SystemRoleTemplate {
 const EMPLOYEE_BASE = [
   ["employees.view", "COMPANY"],
   ["attendance.view_self", "SELF"],
+  ["shifts.view", "SELF"],
+  ["payroll.view_self", "SELF"],
   ["leave.apply", "SELF"],
   ["leave.view_self", "SELF"],
   ["requests.apply", "SELF"],
@@ -241,6 +256,7 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
     grants: [
       ...EMPLOYEE_BASE,
       ["attendance.view_team", "TEAM"],
+      ["attendance.correct", "TEAM"],
       ["leave.view_team", "TEAM"],
       ["leave.approve", "TEAM"],
       ["requests.approve", "TEAM"],
@@ -259,6 +275,9 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["employees.edit", "COMPANY"],
       ["attendance.view_company", "COMPANY"],
       ["attendance.manage", "COMPANY"],
+      ["attendance.correct", "COMPANY"],
+      ["shifts.manage", "COMPANY"],
+      ["payroll.manage", "COMPANY"],
       ["leave.view_department", "DEPARTMENT"],
       ["leave.approve", "COMPANY"],
       ["leave.manage", "COMPANY"],
@@ -275,6 +294,8 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["projects.manage", "COMPANY"],
       ["assets.manage", "COMPANY"],
       ["tickets.manage", "COMPANY"],
+      ["tickets.sla_view", "COMPANY"],
+      ["services.manage", "COMPANY"],
       ["recruitment.manage", "COMPANY"],
       ["lifecycle.manage", "COMPANY"],
       ["performance.manage", "COMPANY"],
@@ -296,6 +317,7 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["leave.approve", "COMPANY"],
       ["analytics.view_company", "COMPANY"],
       ["tickets.manage", "COMPANY"],
+      ["tickets.sla_view", "COMPANY"],
     ],
   },
   {
@@ -310,6 +332,9 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["teams.manage", "COMPANY"],
       ["attendance.view_company", "COMPANY"],
       ["attendance.manage", "COMPANY"],
+      ["attendance.correct", "COMPANY"],
+      ["shifts.manage", "COMPANY"],
+      ["payroll.manage", "COMPANY"],
       ["leave.approve", "COMPANY"],
       ["leave.manage", "COMPANY"],
       ["settings.manage", "COMPANY"],
@@ -326,6 +351,8 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["assets.manage", "COMPANY"],
       ["automations.manage", "COMPANY"],
       ["tickets.manage", "COMPANY"],
+      ["tickets.sla_view", "COMPANY"],
+      ["services.manage", "COMPANY"],
       ["finance.view_company", "COMPANY"],
       ["finance.approve", "COMPANY"],
       ["finance.reimburse", "COMPANY"],
@@ -351,5 +378,7 @@ export const PLATFORM_SUPER_ADMIN: SystemRoleTemplate = {
   key: "super_admin",
   name: "Platform Super Admin",
   description: "Full platform authority across tenants.",
-  grants: [["platform.admin", "GLOBAL"], ...EMPLOYEE_BASE],
+  // tickets.manage lets the operator reply to platform-escalated support
+  // tickets through the native ticket engine (first-response stamping works).
+  grants: [["platform.admin", "GLOBAL"], ...EMPLOYEE_BASE, ["tickets.manage", "GLOBAL"], ["tickets.sla_view", "GLOBAL"]],
 };

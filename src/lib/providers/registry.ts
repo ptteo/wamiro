@@ -29,27 +29,22 @@ export interface ProviderRecord {
   isConfigured: () => boolean;
 }
 
-// Adapter configuration probes reuse the existing integration config readers,
-// keeping this registry the single authority without new runtime deps.
-import { frappeConfig } from "@/modules/integrations/frappe";
-import { zammadConfig } from "@/modules/integrations/zammad";
-
 export const REGISTRY: Record<Capability, ProviderRecord> = {
   hr: {
     capability: "hr",
-    active: null, // built-in people module is primary; Frappe is an optional sync source
+    active: null, // built-in people module is the only implementation (Phase 6 cutover)
     builtIn: "wamiro-people",
     license: null,
-    status: "optional",
-    isConfigured: () => frappeConfig() !== null,
+    status: "integrated",
+    isConfigured: () => true,
   },
   itsm: {
     capability: "itsm",
     active: null,
     builtIn: "wamiro-support",
     license: null,
-    status: "optional",
-    isConfigured: () => zammadConfig() !== null,
+    status: "integrated",
+    isConfigured: () => true,
   },
   storage: {
     capability: "storage",
@@ -73,7 +68,7 @@ export const REGISTRY: Record<Capability, ProviderRecord> = {
     builtIn: "smtp", // self-hosted SMTP only — no SendGrid/Resend per doc 04 §4
     license: null,
     status: "integrated",
-    isConfigured: () => process.env.SMTP_HOST !== undefined,
+    isConfigured: () => Boolean(process.env.SMTP_URL && process.env.MAIL_FROM),
   },
   ai: {
     capability: "ai",

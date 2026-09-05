@@ -8,6 +8,7 @@ import { isModuleEnabled } from "@/modules/iam/catalog";
 import { streamChatTurn } from "@/modules/ai/chat";
 import type { StreamChunk } from "@/modules/ai/chat";
 import type { AuthContext } from "@/lib/session";
+import { enforceRateLimit } from "@/lib/ratelimit";
 import {
   createConversation,
   getMessages,
@@ -46,18 +47,9 @@ const bodySchema = z.object({
   stream: z.boolean().optional(),
 });
 
-// Per-instance rate limiter; shared store only when horizontally scaled.
-const attempts = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(key: string, max: number, windowMs: number) {
-  const now = Date.now();
-  const rec = attempts.get(key);
-  if (!rec || rec.resetAt < now) {
-    attempts.set(key, { count: 1, resetAt: now + windowMs });
-    return;
-  }
-  rec.count += 1;
-  if (rec.count > max) throw ApiError.rateLimited();
-}
+// Anti-abuse: shared DB-backed rate limiter (Phase D). Per-instance
+// maps here would silently reset on horizontal scale; see
+// `src/lib/ratelimit.ts` for the windowed-bucket implementation.
 
 type ParsedBody = z.SafeParseSuccess<z.infer<typeof bodySchema>>;
 type ParsedData = z.infer<typeof bodySchema>;
@@ -69,7 +61,9 @@ export const POST = route(async (req: NextRequest, { auth }) => {
   // Anti-abuse only. Does not model any provider RPM (including 15/min).
   // Set AI_CHAT_RATE_LIMIT_PER_HOUR=0 to disable. Fast providers are not throttled extra.
   const perHour = Number(process.env.AI_CHAT_RATE_LIMIT_PER_HOUR ?? 1000);
-  if (perHour > 0) rateLimit(`ai:${auth.user.id}`, perHour, 3_600_000);
+  if (perHour > 0) {
+    await enforceRateLimit("key", `ai:${auth.user.id}`, { limit: perHour, windowSeconds: 3600 });
+  }
 
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) throw ApiError.badRequest("messages required", parsed.error.flatten());

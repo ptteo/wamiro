@@ -1,14 +1,14 @@
 import Link from "next/link";
 
 import { DepartmentsClient } from "@/components/departments-client";
-import { HrSyncButton } from "@/components/hr-sync-button";
+
 import { AdminKpi, AdminKpiStrip, AdminSection } from "@/components/admin-ui";
 import { Badge, Card, EmptyState, btn } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
 import { SECURITY_AUDIT_ACTIONS, SECURITY_AUDIT_QUERY } from "@/lib/admin-security";
 import { requireAuthPage } from "@/lib/page-auth";
 import { listDepartments } from "@/modules/org/service";
-import { frappeConfig } from "@/modules/integrations/frappe";
+
 import { can } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
 import {
@@ -209,7 +209,7 @@ export default async function AdminPage() {
       {can(ctx.access, "data.export") ? (
         <AdminSection title="Data export" subtitle="CSV downloads are audited" tone="brand">
           <div className="flex flex-wrap gap-2">
-            {["employees", "attendance", "leave", "audit"].map((d) => (
+            {["employees", "attendance", "leave", "audit", "hr-headcount", "hr-attrition", "hr-leave", "hr-payroll", "support-tickets", "support-sla", "support-csat"].map((d) => (
               <a key={d} href={`/api/v1/admin/export/${d}`} className={`${btn.secondary} ${btn.small}`}>
                 Export {d}
               </a>
@@ -217,15 +217,6 @@ export default async function AdminPage() {
           </div>
         </AdminSection>
       ) : null}
-
-      <AdminSection title="Integrations" subtitle="Frappe HR employee sync" tone="success">
-        <div className="flex flex-col gap-2 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <span className="text-tertiary">
-            {frappeConfig() ? "Frappe HR is configured." : "Frappe HR is not configured."}
-          </span>
-          <HrSyncButton configured={frappeConfig() !== null} />
-        </div>
-      </AdminSection>
 
       <DepartmentsClient
         departments={(await listDepartments(ctx)).map((d) => ({

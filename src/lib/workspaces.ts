@@ -2,6 +2,8 @@ import type { LucideIcon } from "lucide-react";
 
 import type { ModuleKey } from "@/modules/iam/catalog";
 import {
+  Armchair,
+  Award,
   BarChart3,
   Bell,
   BookOpen,
@@ -10,12 +12,17 @@ import {
   Calendar,
   CalendarCheck,
   CalendarDays,
+  CalendarClock,
   CheckCircle2,
   ClipboardCheck,
   FileText,
+  GraduationCap,
+  History,
   FolderKanban,
+  Gauge,
   Home,
   Inbox,
+  Plug,
   LayoutDashboard,
   LifeBuoy,
   LineChart,
@@ -27,14 +34,22 @@ import {
   Network,
   Package,
   PenLine,
+  Rocket,
+  Scale,
   ScrollText,
   Settings,
   Settings2,
   Shield,
   Sparkles,
+  Star,
   Target,
+  Trophy,
+  Wand2,
   UserCog,
+  UserPlus,
+  UserRound,
   Users,
+  Wallet,
 } from "lucide-react";
 
 // ============================================================================
@@ -72,6 +87,8 @@ export interface SidebarItem {
   scope?: { of: string; in?: string[] };
   /** Badge count resolved server-side (unread notifications, open approvals). */
   badge?: SidebarBadgeKey;
+  /** Optional sub-group label — rendered as a small caps header inside the expanded workspace section. */
+  group?: string;
 }
 
 export interface WorkspaceDef {
@@ -96,6 +113,7 @@ export interface ShellNavItem {
   href: string;
   label: string;
   badge?: number;
+  group?: string;
 }
 
 export interface ShellNavWorkspace {
@@ -115,7 +133,46 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
     sidebar: [
       { label: "Home", href: "/home", icon: Home },
       { label: "Notifications", href: "/notifications", icon: Bell, badge: "unread" },
-      { label: "Support", href: "/support", icon: LifeBuoy },
+      { label: "Favorites", href: "/favorites", icon: Star },
+    ],
+  },
+  support: {
+    id: "support",
+    label: "Support",
+    icon: LifeBuoy,
+    defaultRoute: "/tickets",
+    requiredModules: ["tickets"],
+    requiredPermissions: ["tickets.create"],
+    sidebar: [
+      { label: "My Tickets", href: "/tickets", icon: LifeBuoy, module: "tickets", permissions: ["tickets.create"] },
+      {
+        label: "SLA Dashboard",
+        href: "/tickets/sla",
+        icon: Gauge,
+        module: "tickets",
+        permissions: ["tickets.manage"],
+      },
+      {
+        label: "Agent Toolkit",
+        href: "/tickets/toolkit",
+        icon: Wand2,
+        module: "tickets",
+        permissions: ["tickets.manage"],
+      },
+      {
+        label: "Service Catalog",
+        href: "/tickets/catalog",
+        icon: Inbox,
+        module: "tickets",
+        permissions: ["tickets.create"],
+      },
+      {
+        label: "Incidents & Changes",
+        href: "/tickets/it-records",
+        icon: ClipboardCheck,
+        module: "tickets",
+        permissions: ["tickets.manage"],
+      },
     ],
   },
   people: {
@@ -124,22 +181,92 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
     icon: Users,
     defaultRoute: "/people",
     sidebar: [
-      { label: "Directory", href: "/people", icon: Users, module: "people", permissions: ["employees.view"] },
-      { label: "Teams", href: "/teams", icon: Network, module: "teams", permissions: ["employees.view"] },
+      { label: "Directory", href: "/people", icon: Users, module: "people", permissions: ["employees.view"], group: "Directory" },
+      { label: "My Profile", href: "/people/me", icon: UserRound, group: "Directory" },
+      { label: "Teams", href: "/teams", icon: Network, module: "teams", permissions: ["employees.view"], group: "Directory" },
       {
         label: "Org Chart",
         href: "/org-chart",
         icon: ListTree,
         module: "people",
         scope: { of: "employees.view", in: ["COMPANY", "GLOBAL"] },
+        group: "Directory",
       },
-      { label: "Attendance", href: "/attendance", icon: CalendarCheck, module: "attendance", permissions: ["attendance.view_self"] },
+      { label: "Attendance", href: "/attendance", icon: CalendarCheck, module: "attendance", permissions: ["attendance.view_self"], group: "Time & Attendance" },
+      { label: "Attendance Corrections", href: "/attendance/corrections", icon: History, module: "attendance", permissions: ["attendance.view_self"], group: "Time & Attendance" },
+      { label: "Shifts", href: "/shifts", icon: CalendarClock, module: "attendance", permissions: ["shifts.view"], group: "Time & Attendance" },
       {
         label: "Leave",
         href: "/leave",
         icon: CalendarDays,
         module: "leave",
         permissions: ["leave.apply", "leave.view_self"],
+        group: "Leave",
+      },
+      {
+        label: "Leave Encashment",
+        href: "/leave/encashment",
+        icon: Wallet,
+        module: "leave",
+        permissions: ["leave.apply", "leave.approve"],
+        group: "Leave",
+      },
+      {
+        label: "Payroll",
+        href: "/payroll",
+        icon: Wallet,
+        permissions: ["payroll.view_self", "payroll.manage"],
+        group: "Payroll & Documents",
+      },
+      {
+        label: "Advances",
+        href: "/payroll/advances",
+        icon: Wallet,
+        permissions: ["payroll.view_self", "payroll.manage"],
+        group: "Payroll & Documents",
+      },
+      {
+        label: "HR Documents",
+        href: "/people/documents",
+        icon: FileText,
+        module: "people",
+        permissions: ["documents.view"],
+        group: "Payroll & Documents",
+      },
+      {
+        label: "Performance",
+        href: "/people/performance",
+        icon: Trophy,
+        permissions: ["performance.view_self", "performance.manage"],
+        group: "People Ops",
+      },
+      {
+        label: "Recognition",
+        href: "/people/recognition",
+        icon: Award,
+        permissions: ["recognition.give"],
+        group: "People Ops",
+      },
+      {
+        label: "Recruitment",
+        href: "/people/recruitment",
+        icon: UserPlus,
+        permissions: ["recruitment.manage"],
+        group: "People Ops",
+      },
+      {
+        label: "Learning",
+        href: "/people/learning",
+        icon: GraduationCap,
+        permissions: ["learning.view", "learning.manage"],
+        group: "People Ops",
+      },
+      {
+        label: "Onboarding & Offboarding",
+        href: "/people/lifecycle",
+        icon: Rocket,
+        permissions: ["lifecycle.manage"],
+        group: "People Ops",
       },
     ],
   },
@@ -201,8 +328,25 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
     sidebar: [
       { label: "Announcements", href: "/announcements", icon: Megaphone, module: "announcements" },
       { label: "Discussions", href: "/discussions", icon: MessageSquare, module: "announcements", permissions: ["employees.view"] },
-      { label: "Polls", href: "/surveys", icon: ListChecks, permissions: ["employees.view"] },
-      { label: "Signatures", href: "/acknowledgements", icon: PenLine, module: "announcements", permissions: ["employees.view"] },
+      { label: "Surveys & Polls", href: "/surveys", icon: ListChecks, permissions: ["employees.view"] },
+      { label: "Acknowledgements", href: "/acknowledgements", icon: PenLine, module: "announcements", permissions: ["employees.view"] },
+      {
+        label: "Governance",
+        href: "/governance",
+        icon: Scale,
+        module: "governance",
+        permissions: ["governance.view"],
+      },
+    ],
+  },
+  workplace: {
+    id: "workplace",
+    label: "Workplace",
+    icon: Armchair,
+    defaultRoute: "/workplace",
+    requiredModules: ["workplace"],
+    sidebar: [
+      { label: "Rooms & Bookings", href: "/workplace", icon: Armchair, module: "workplace", permissions: ["workplace.view", "workplace.book"] },
     ],
   },
   assets: {
@@ -221,13 +365,13 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
     requiredModules: ["finance"],
     requiredPermissions: ["finance.view_self"],
     sidebar: [
-      { label: "Finance Home", href: "/finance", icon: LayoutDashboard, module: "finance", permissions: ["finance.view_self"] },
-      { label: "Expenses", href: "/finance/expenses", icon: PenLine, module: "finance", permissions: ["finance.view_self"] },
-      { label: "Purchases", href: "/finance/purchases", icon: Package, module: "finance", permissions: ["finance.view_self"] },
-      { label: "Travel", href: "/finance/travel", icon: CalendarDays, module: "finance", permissions: ["finance.view_self"] },
-      { label: "Vendors", href: "/finance/vendors", icon: Building2, module: "finance", permissions: ["finance.manage_vendors"] },
-      { label: "Budgets", href: "/finance/budgets", icon: Target, module: "finance", permissions: ["finance.view_company"] },
-      { label: "Approvals", href: "/finance/approvals", icon: CheckCircle2, module: "finance", permissions: ["finance.approve"] },
+      { label: "Finance Home", href: "/finance", icon: LayoutDashboard, module: "finance", permissions: ["finance.view_self"], group: "Self-Service" },
+      { label: "Expenses", href: "/finance/expenses", icon: PenLine, module: "finance", permissions: ["finance.view_self"], group: "Self-Service" },
+      { label: "Purchases", href: "/finance/purchases", icon: Package, module: "finance", permissions: ["finance.view_self"], group: "Self-Service" },
+      { label: "Travel", href: "/finance/travel", icon: CalendarDays, module: "finance", permissions: ["finance.view_self"], group: "Self-Service" },
+      { label: "Vendors", href: "/finance/vendors", icon: Building2, module: "finance", permissions: ["finance.manage_vendors"], group: "Company" },
+      { label: "Budgets", href: "/finance/budgets", icon: Target, module: "finance", permissions: ["finance.view_company"], group: "Company" },
+      { label: "Approvals", href: "/finance/approvals", icon: CheckCircle2, module: "finance", permissions: ["finance.approve"], group: "Company" },
     ],
   },
   analytics: {
@@ -238,6 +382,8 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
     requiredModules: ["analytics"],
     sidebar: [
       { label: "Analytics", href: "/analytics", icon: LineChart, module: "analytics", scope: { of: "analytics.view" } },
+      { label: "People & HR", href: "/analytics/hr", icon: Users, module: "analytics", permissions: ["analytics.view_company"] },
+      { label: "Support", href: "/analytics/support", icon: LifeBuoy, module: "analytics", permissions: ["tickets.sla_view"] },
       { label: "Dashboards", href: "/dashboards", icon: LayoutDashboard, module: "analytics", scope: { of: "analytics.view" } },
     ],
   },
@@ -263,13 +409,15 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         icon: Settings2,
         module: "admin",
         permissions: ["users.manage", "roles.manage", "audit.view"],
+        group: "Console",
       },
       {
-        label: "Access Control",
+        label: "Users",
         href: "/admin/users",
         icon: UserCog,
         module: "admin",
         permissions: ["users.manage", "roles.manage", "audit.view"],
+        group: "Access & Security",
       },
       {
         label: "Roles",
@@ -277,6 +425,7 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         icon: UserCog,
         module: "admin",
         permissions: ["roles.manage"],
+        group: "Access & Security",
       },
       {
         label: "Security Center",
@@ -284,6 +433,7 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         icon: Shield,
         module: "admin",
         permissions: ["users.manage"],
+        group: "Access & Security",
       },
       {
         label: "Audit Log",
@@ -291,6 +441,7 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         icon: ScrollText,
         module: "admin",
         permissions: ["audit.view"],
+        group: "Access & Security",
       },
       {
         label: "Access Reviews",
@@ -298,20 +449,55 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         icon: ClipboardCheck,
         module: "admin",
         permissions: ["users.manage", "roles.manage", "audit.view"],
+        group: "Access & Security",
+      },
+      {
+        label: "Services",
+        href: "/admin/services",
+        icon: Package,
+        module: "admin",
+        permissions: ["services.manage"],
+        group: "Support Settings",
+      },
+      {
+        label: "Ticket Groups",
+        href: "/admin/ticket-groups",
+        icon: Network,
+        module: "admin",
+        permissions: ["tickets.manage"],
+        group: "Support Settings",
+      },
+      {
+        label: "Mailboxes",
+        href: "/admin/mailboxes",
+        icon: Inbox,
+        module: "admin",
+        permissions: ["tickets.manage"],
+        group: "Support Settings",
+      },
+      {
+        label: "Integrations",
+        href: "/admin/integrations",
+        icon: Plug,
+        module: "admin",
+        permissions: ["settings.manage"],
+        group: "Enterprise",
       },
     ],
   },
 };
 
-/** Rail order — major mental models only (§3). */
+/** Sidebar order — major mental models only (§3). */
 export const RAIL_ORDER = [
   "home",
   "people",
   "work",
   "requests",
+  "support",
   "knowledge",
   "documents",
   "company",
+  "workplace",
   "assets",
   "finance",
   "analytics",

@@ -26,4 +26,7 @@ export class ApiError extends Error {
   static rateLimited(message = "Too many requests. Try again shortly.") {
     return new ApiError(429, "rate_limited", message);
   }
+  static badGateway(message = "Upstream service error") {
+    return new ApiError(502, "bad_gateway", message);
+  }
 }

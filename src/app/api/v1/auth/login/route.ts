@@ -9,6 +9,7 @@ import { ApiError } from "@/lib/errors";
 import { createPendingMfaToken, verifyPendingMfaToken } from "@/lib/pending-mfa";
 import { verifyPassword } from "@/lib/password";
 import { verifyTotp } from "@/lib/totp";
+import { enforceRateLimit } from "@/lib/ratelimit";
 import { SESSION_COOKIE, cookieOptions, createSession } from "@/lib/session";
 import { organizations, users } from "@/db/schema";
 
@@ -20,23 +21,14 @@ const bodySchema = z.object({
   totpCode: z.string().max(10).optional(),
 });
 
-// ponytail: per-instance limiter; shared store only when horizontally scaled
-const attempts = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(key: string, max: number, windowMs: number) {
-  const now = Date.now();
-  const rec = attempts.get(key);
-  if (!rec || rec.resetAt < now) {
-    attempts.set(key, { count: 1, resetAt: now + windowMs });
-    return;
-  }
-  rec.count += 1;
-  if (rec.count > max) throw ApiError.rateLimited();
-}
-
 export const POST = route(
   async (req: NextRequest) => {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
-    rateLimit(`login:${ip}`, 20, 900_000);
+    // Phase D: shared (DB) limiter — holds across instances.
+    await enforceRateLimit("ip", `login:${ip}`, {
+      limit: Number(process.env.RATE_LIMIT_AUTH_PER_15MIN ?? 40),
+      windowSeconds: 900,
+    });
 
     const parsed = bodySchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw ApiError.badRequest("Email and password required");
@@ -44,9 +36,11 @@ export const POST = route(
     const email = parsed.data.email.trim().toLowerCase();
     const [row] = await db
       .select({
+        orgBillingStatus: organizations.billingStatus,
         id: users.id,
         passwordHash: users.passwordHash,
         status: users.status,
+        authMethod: users.authMethod,
         totpSecret: users.totpSecret,
         totpEnabled: users.totpEnabled,
         orgStatus: organizations.status,
@@ -72,6 +66,12 @@ export const POST = route(
     }
     if (row.status === "suspended" || row.orgStatus !== "active") {
       throw ApiError.forbidden("Account or organization suspended");
+    }
+    if (row.authMethod === "sso") {
+      throw ApiError.forbidden("This account uses single sign-on. Sign in with SSO instead.");
+    }
+    if (row.orgBillingStatus === "cancelled") {
+      throw ApiError.forbidden("This organization's subscription has ended. Contact support to reactivate.");
     }
 
     // ---- MFA second step ----

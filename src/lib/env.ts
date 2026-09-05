@@ -45,7 +45,41 @@ export const env = {
     loadDotEnvOnce();
     return process.env.APP_URL ?? "http://localhost:3000";
   },
+  /** Extra hosts treated as platform (comma-separated, hostname[:port] each). */
+  get PLATFORM_HOSTS(): string[] {
+    loadDotEnvOnce();
+    return (process.env.PLATFORM_HOSTS ?? "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  },
+  get VAPID_PUBLIC_KEY(): string | undefined {
+    loadDotEnvOnce();
+    return process.env.VAPID_PUBLIC_KEY || undefined;
+  },
+  get VAPID_PRIVATE_KEY(): string | undefined {
+    loadDotEnvOnce();
+    return process.env.VAPID_PRIVATE_KEY || undefined;
+  },
+  get VAPID_SUBJECT(): string {
+    loadDotEnvOnce();
+    return process.env.VAPID_SUBJECT ?? `mailto:admin@${hostOnly(process.env.APP_URL ?? "localhost")}`;
+  },
   get isProd() {
     return process.env.NODE_ENV === "production";
   },
 };
+
+/** "example.com:3000" → "example.com" (also strips IPv6 brackets). */
+export function hostOnly(host: string): string {
+  const h = host.trim().toLowerCase();
+  if (h.startsWith("[")) {
+    const end = h.indexOf("]");
+    return end > -1 ? h.slice(0, end) : h;
+  }
+  const colon = h.lastIndexOf(":");
+  // A colon only separates a port when the label after it is numeric.
+  const after = colon > -1 ? h.slice(colon + 1) : "";
+  if (after && /^\d+$/.test(after)) return h.slice(0, colon);
+  return h;
+}

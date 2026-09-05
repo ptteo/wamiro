@@ -7,6 +7,7 @@ import {
   Building2,
   ChevronDown,
   ChevronUp,
+  CreditCard,
   LogOut,
   Shield,
 } from "lucide-react";
@@ -25,6 +26,46 @@ import {
 
 function workspaceIcon(id: string) {
   return WORKSPACES[id]?.icon ?? (id === PLATFORM_WORKSPACE.id ? PLATFORM_WORKSPACE.icon : null);
+}
+
+function SidebarLink({
+  href,
+  label,
+  badge,
+  current,
+  icon,
+}: {
+  href: string;
+  label: string;
+  badge?: number;
+  current: boolean;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      aria-current={current ? "page" : undefined}
+      className={cx(
+        "flex h-8 items-center gap-2 rounded-md py-0 pl-2 pr-2 text-[13px] font-medium",
+        current ? "bg-brand-subtle text-brand-text" : "text-secondary hover:bg-surface-hover hover:text-primary",
+      )}
+    >
+      <span
+        className={cx(
+          "w-0.5 shrink-0 self-stretch rounded-full",
+          current ? "bg-brand" : "bg-transparent",
+        )}
+        aria-hidden
+      />
+      {icon}
+      <span className="min-w-0 truncate">{label}</span>
+      {badge ? (
+        <span className="ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-on-brand">
+          {badge > 9 ? "9+" : badge}
+        </span>
+      ) : null}
+    </Link>
+  );
 }
 
 function initials(name: string) {
@@ -49,27 +90,17 @@ export function WorkspaceSidebar({
   const pathname = usePathname();
   const settings = pathname.startsWith("/settings/");
   const activeId = settings ? null : (resolveWorkspaceId(pathname, workspaces) ?? null);
-  const [openIds, setOpenIds] = useState<Set<string>>(
-    () => new Set(activeId ? [activeId] : []),
-  );
+  // Single-open accordion: exactly one workspace section is expanded at a time.
+  // Opening another tab closes the previous one; navigating auto-opens the
+  // workspace that owns the current page.
+  const [openId, setOpenId] = useState<string | null>(() => activeId);
 
   useEffect(() => {
-    if (!activeId) return;
-    setOpenIds((prev) => {
-      if (prev.has(activeId)) return prev;
-      const next = new Set(prev);
-      next.add(activeId);
-      return next;
-    });
+    if (activeId) setOpenId(activeId);
   }, [activeId]);
 
   function toggle(id: string) {
-    setOpenIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setOpenId((cur) => (cur === id ? null : id));
   }
 
   return (
@@ -104,9 +135,14 @@ export function WorkspaceSidebar({
       <nav aria-label="Modules" className="mt-3 min-h-0 flex-1 overflow-y-auto">
         {workspaces.map((ws) => {
           const Icon = workspaceIcon(ws.id);
-          const expanded = openIds.has(ws.id);
+          const expanded = openId === ws.id;
           const inModule = ws.id === activeId;
           const oneChild = ws.items.length === 1 && ws.items[0];
+          // Preserve group order as declared; items without a group render first.
+          const groups: string[] = [];
+          for (const item of ws.items) {
+            if (item.group && !groups.includes(item.group)) groups.push(item.group);
+          }
           return (
             <div key={ws.id} className="mb-0.5">
               {oneChild ? (
@@ -137,7 +173,7 @@ export function WorkspaceSidebar({
                     className={cx(
                       "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-semibold",
                       inModule
-                        ? "text-brand-text"
+                        ? "bg-brand-subtle text-brand-text"
                         : "text-primary hover:bg-surface-hover",
                     )}
                   >
@@ -152,43 +188,55 @@ export function WorkspaceSidebar({
                     />
                   </button>
                   {expanded ? (
-                    <ul className="mb-1 mt-0.5 space-y-px">
-                      {ws.items.map((item) => {
-                        const ItemIcon = sidebarIcon(ws.id, item.href);
-                        const current = sidebarItemCurrent(pathname, ws.items, item.href);
-                        return (
-                          <li key={item.href}>
-                            <Link
-                              href={item.href}
-                              aria-current={current ? "page" : undefined}
-                              className={cx(
-                                "flex h-8 items-center gap-2 rounded-md py-0 pl-2 pr-2 text-[13px] font-medium",
-                                current
-                                  ? "bg-brand-subtle text-brand-text"
-                                  : "text-secondary hover:bg-surface-hover hover:text-primary",
-                              )}
-                            >
-                              <span
-                                className={cx(
-                                  "w-0.5 shrink-0 self-stretch rounded-full",
-                                  current ? "bg-brand" : "bg-transparent",
-                                )}
-                                aria-hidden
-                              />
-                              {ItemIcon ? (
-                                <ItemIcon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
-                              ) : null}
-                              <span className="min-w-0 truncate">{item.label}</span>
-                              {item.badge ? (
-                                <span className="ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-on-brand">
-                                  {item.badge > 9 ? "9+" : item.badge}
-                                </span>
-                              ) : null}
-                            </Link>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    <div className="mb-1 mt-0.5">
+                      {groups.map((group) => (
+                        <div key={group}>
+                          <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-tertiary">
+                            {group}
+                          </p>
+                          <ul className="space-y-px">
+                            {ws.items
+                              .filter((item) => item.group === group)
+                              .map((item) => {
+                                const ItemIcon = sidebarIcon(ws.id, item.href);
+                                const current = sidebarItemCurrent(pathname, ws.items, item.href);
+                                return (
+                                  <li key={item.href}>
+                                    <SidebarLink
+                                      href={item.href}
+                                      label={item.label}
+                                      badge={item.badge}
+                                      current={current}
+                                      icon={ItemIcon ? <ItemIcon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} /> : null}
+                                    />
+                                  </li>
+                                );
+                              })}
+                          </ul>
+                        </div>
+                      ))}
+                      {ws.items.filter((item) => !item.group).length > 0 ? (
+                        <ul className="space-y-px">
+                          {ws.items
+                            .filter((item) => !item.group)
+                            .map((item) => {
+                              const ItemIcon = sidebarIcon(ws.id, item.href);
+                              const current = sidebarItemCurrent(pathname, ws.items, item.href);
+                              return (
+                                <li key={item.href}>
+                                  <SidebarLink
+                                    href={item.href}
+                                    label={item.label}
+                                    badge={item.badge}
+                                    current={current}
+                                    icon={ItemIcon ? <ItemIcon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} /> : null}
+                                  />
+                                </li>
+                              );
+                            })}
+                        </ul>
+                      ) : null}
+                    </div>
                   ) : null}
                 </>
               )}
@@ -201,6 +249,7 @@ export function WorkspaceSidebar({
         user={user}
         onOrg={pathname.startsWith("/settings/organization")}
         onSecurity={pathname.startsWith("/settings/security")}
+        onBilling={pathname.startsWith("/settings/billing")}
       />
     </>
   );
@@ -210,10 +259,12 @@ function AccountMenu({
   user,
   onOrg,
   onSecurity,
+  onBilling,
 }: {
   user: { name: string; email: string; roleLabel: string };
   onOrg: boolean;
   onSecurity: boolean;
+  onBilling: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -278,6 +329,18 @@ function AccountMenu({
           >
             <Shield className="h-4 w-4" strokeWidth={1.75} />
             Security
+          </Link>
+          <Link
+            href="/settings/billing"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className={cx(
+              "flex h-9 items-center gap-2 px-3 text-[13px] font-medium",
+              onBilling ? "bg-brand-subtle text-brand-text" : "text-primary hover:bg-surface-hover",
+            )}
+          >
+            <CreditCard className="h-4 w-4" strokeWidth={1.75} />
+            Plan & Billing
           </Link>
           <div className="px-1.5 py-1">
             <ThemeToggle showLabel />

@@ -112,13 +112,8 @@ await step("requests: list loads", async () => expectOk(await c.get("/api/v1/req
 await step("knowledge: articles load", async () => expectOk(await c.get("/api/v1/knowledge"), "knowledge"));
 await step("documents: library loads", async () => expectOk(await c.get("/api/v1/documents"), "documents"));
 await step("support: tickets endpoint behaves", async () => {
-  const res = await c.get("/api/v1/support/tickets");
-  // 200 = Zammad connected and tickets listed; 400 = correctly reports
-  // "helpdesk not configured" (D11 §41 failure pattern). Both healthy.
-  if (res.status === 400 && /not connected/i.test(res.body?.error?.message ?? "")) {
-    return "(helpdesk not configured — reported cleanly)";
-  }
-  assert.equal(res.status, 200, `tickets: HTTP ${res.status}`);
+  // Native helpdesk (Phase 6 cutover) — no external dependency to configure.
+  await expectOk(await c.get("/api/v1/tickets"), "tickets");
 });
 await step("analytics: dashboard loads", async () =>
   expectOkOrForbidden(await c.get("/api/v1/analytics"), "analytics"));

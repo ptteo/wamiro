@@ -18,8 +18,11 @@ this repository).
 
 Deliberate v1 deviations from the blueprint (documented in
 `docs/architecture.md`): single Next.js app instead of Next+NestJS split,
-built-in auth instead of self-hosted Keycloak, Wamiro-owned HR-lite instead of
-Frappe HR. All three keep a clean seam for the blueprint systems later.
+built-in auth instead of self-hosted Keycloak, and fully native HR + support
+modules instead of Frappe HR + Zammad (see
+`docs/implementation-plan-native-hr-support.md`). No external helpdesk or HR
+dependency remains — attendance, leave, payroll, shifts, tickets, SLA, and
+email intake all run inside Wamiro.
 
 ## Quick start
 

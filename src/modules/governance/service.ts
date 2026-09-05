@@ -124,13 +124,22 @@ export async function setRiskStatus(ctx: AuthContext, id: string, status: string
 // ---------- R8-pattern: overdue obligations sweep (idempotent) ----------
 export async function escalateOverdueObligations(ctx: AuthContext) {
   requireManage(ctx);
+  return escalateOverdueObligationsInOrg(ctx.user.organizationId);
+}
+
+/**
+ * Phase F: org-agnostic governance sweep used by the background jobs worker.
+ * `escalated_at` set-once makes repeated runs idempotent.
+ */
+export async function escalateOverdueObligationsInOrg(orgId: string): Promise<number> {
+  const orgIdScope = orgId;
   const today = new Date().toISOString().slice(0, 10);
   const overdue = await db
     .select({ id: govObligations.id, title: govObligations.title })
     .from(govObligations)
     .where(
       and(
-        eq(govObligations.organizationId, ctx.user.organizationId),
+        eq(govObligations.organizationId, orgIdScope),
         eq(govObligations.status, "open"),
         lt(govObligations.dueAt, today),
       ),
@@ -153,15 +162,15 @@ export async function escalateOverdueObligations(ctx: AuthContext) {
       FROM user_roles ur
       JOIN roles r ON r.id = ur.role_id
       JOIN role_permissions rp ON rp.role_id = ur.role_id
-      WHERE r.organization_id = ${ctx.user.organizationId}
+      WHERE r.organization_id = ${orgIdScope}
         AND rp.permission = 'governance.manage'
       LIMIT 10
     `);
     for (const h of (holders.rows as { id: string }[])) {
-      await notify({ organizationId: ctx.user.organizationId, userId: h.id, type: "governance", title: "Compliance obligation overdue", body: `${escalated} obligation(s) past due date.`, link: "/governance" });
+      await notify({ organizationId: orgIdScope, userId: h.id, type: "governance", title: "Compliance obligation overdue", body: `${escalated} obligation(s) past due date.`, link: "/governance" });
     }
   }
-  await audit({ organizationId: ctx.user.organizationId, actorUserId: ctx.user.id, action: "GOVERNANCE_OBLIGATIONS_ESCALATED", entityType: "gov_obligation", newValue: { escalated } });
+  await audit({ organizationId: orgIdScope, actorUserId: null, action: "GOVERNANCE_OBLIGATIONS_ESCALATED", entityType: "gov_obligation", newValue: { escalated, source: "scheduled_worker" } });
   return escalated;
 }
 export async function createObligation(

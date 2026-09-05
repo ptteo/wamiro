@@ -7,10 +7,34 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import type { AuthContext } from "@/lib/session";
-import { attendanceRecords, auditLogs, departments, employees, leaveRequests, leaveTypes, users } from "@/db/schema";
+import {
+  attendanceRecords,
+  auditLogs,
+  departments,
+  employees,
+  leaveBalances,
+  leaveRequests,
+  leaveTypes,
+  payrollRuns,
+  payslips,
+  tickets,
+  users,
+} from "@/db/schema";
 import { can } from "@/modules/iam/engine";
 
-export const DATASETS = ["employees", "attendance", "leave", "audit"] as const;
+export const DATASETS = [
+  "employees",
+  "attendance",
+  "leave",
+  "audit",
+  "hr-headcount",
+  "hr-attrition",
+  "hr-leave",
+  "hr-payroll",
+  "support-tickets",
+  "support-sla",
+  "support-csat",
+] as const;
 export type Dataset = (typeof DATASETS)[number];
 
 export function isDataset(v: string): v is Dataset {
@@ -34,6 +58,13 @@ const REQUIRED: Record<Dataset, string> = {
   attendance: "attendance.view_company",
   leave: "leave.manage",
   audit: "audit.view",
+  "hr-headcount": "analytics.view_company",
+  "hr-attrition": "analytics.view_company",
+  "hr-leave": "analytics.view_company",
+  "hr-payroll": "analytics.view_company",
+  "support-tickets": "tickets.sla_view",
+  "support-sla": "tickets.sla_view",
+  "support-csat": "tickets.sla_view",
 };
 
 export async function exportDataset(
@@ -79,6 +110,106 @@ export async function exportDataset(
       .limit(10_000);
     headers = ["user", "clock_in", "clock_out", "source"];
     rows = data.map((d) => [d.userName, d.clockIn?.toISOString(), d.clockOut?.toISOString(), d.source]);
+  } else if (dataset === "hr-headcount") {
+    const data = await db
+      .select({
+        name: users.name,
+        email: users.email,
+        jobTitle: employees.jobTitle,
+        department: departments.name,
+        status: employees.status,
+        hiredAt: employees.hiredAt,
+        leftAt: employees.leftAt,
+      })
+      .from(users)
+      .innerJoin(employees, eq(employees.userId, users.id))
+      .leftJoin(departments, eq(departments.id, employees.departmentId))
+      .where(eq(users.organizationId, orgId));
+    headers = ["name", "email", "job_title", "department", "status", "hired_at", "left_at"];
+    rows = data.map((d) => [d.name, d.email, d.jobTitle, d.department, d.status, d.hiredAt, d.leftAt]);
+  } else if (dataset === "hr-attrition") {
+    const data = await db.execute(sql`
+      WITH months AS (
+        SELECT generate_series(date_trunc('month', CURRENT_DATE) - interval '11 months',
+                               date_trunc('month', CURRENT_DATE), interval '1 month')::date AS m
+      )
+      SELECT to_char(months.m, 'YYYY-MM') AS month,
+        (SELECT count(*) FROM employees WHERE organization_id = ${orgId}
+           AND hired_at >= months.m AND hired_at < months.m + interval '1 month')::int AS joins,
+        (SELECT count(*) FROM employees WHERE organization_id = ${orgId}
+           AND left_at >= months.m AND left_at < months.m + interval '1 month')::int AS leaves
+      FROM months ORDER BY months.m
+    `);
+    headers = ["month", "joins", "leaves"];
+    rows = (data.rows as unknown as { month: string; joins: number; leaves: number }[]).map((d) => [d.month, d.joins, d.leaves]);
+  } else if (dataset === "hr-leave") {
+    const data = await db
+      .select({
+        type: leaveTypes.name,
+        entitled: leaveBalances.entitledDays,
+        used: leaveBalances.usedDays,
+      })
+      .from(leaveTypes)
+      .leftJoin(leaveBalances, sql`${leaveBalances.leaveTypeId} = ${leaveTypes.id} AND ${leaveBalances.year} = EXTRACT(YEAR FROM CURRENT_DATE)::int`)
+      .where(eq(leaveTypes.organizationId, orgId))
+      .orderBy(desc(leaveBalances.usedDays));
+    headers = ["leave_type", "entitled_days", "used_days"];
+    rows = data.map((d) => [d.type, d.entitled, d.used]);
+  } else if (dataset === "hr-payroll") {
+    const data = await db
+      .select({
+        department: departments.name,
+        gross: payslips.gross,
+        net: payslips.net,
+      })
+      .from(payslips)
+      .innerJoin(payrollRuns, eq(payrollRuns.id, payslips.runId))
+      .innerJoin(employees, sql`${employees.userId} = ${payslips.employeeUserId} AND ${employees.organizationId} = ${orgId}`)
+      .leftJoin(departments, eq(departments.id, employees.departmentId))
+      .where(and(eq(payslips.organizationId, orgId), sql`${payrollRuns.status} IN ('approved','paid')`, sql`${payrollRuns.periodStart} >= date_trunc('year', CURRENT_DATE)::date`));
+    headers = ["department", "gross", "net"];
+    rows = data.map((d) => [d.department ?? "Unassigned", d.gross, d.net]);
+  } else if (dataset === "support-tickets") {
+    const data = await db
+      .select({
+        title: tickets.title,
+        category: tickets.category,
+        priority: tickets.priority,
+        status: tickets.status,
+        slaState: tickets.slaState,
+        requester: users.name,
+        createdAt: tickets.createdAt,
+        resolvedAt: tickets.resolvedAt,
+        csat: tickets.csatScore,
+      })
+      .from(tickets)
+      .innerJoin(users, eq(users.id, tickets.requesterId))
+      .where(eq(tickets.organizationId, orgId))
+      .limit(50_000);
+    headers = ["title", "category", "priority", "status", "sla_state", "requester", "created_at", "resolved_at", "csat_score"];
+    rows = data.map((d) => [d.title, d.category, d.priority, d.status, d.slaState, d.requester, d.createdAt.toISOString(), d.resolvedAt?.toISOString() ?? "", d.csat ?? ""]);
+  } else if (dataset === "support-sla") {
+    const data = await db.execute(sql`
+      SELECT priority,
+             count(*) FILTER (WHERE resolved_at <= sla_due_date)::int AS met,
+             count(*)::int AS due
+      FROM tickets
+      WHERE organization_id = ${orgId} AND status IN ('resolved','closed') AND sla_due_date IS NOT NULL
+      GROUP BY priority ORDER BY due DESC
+    `);
+    headers = ["priority", "met", "due", "compliance_pct"];
+    rows = (data.rows as unknown as { priority: string; met: number; due: number }[]).map((d) => {
+      const due = Number(d.due);
+      return [d.priority, d.met, due, due === 0 ? 0 : Math.round((Number(d.met) / due) * 1000) / 10];
+    });
+  } else if (dataset === "support-csat") {
+    const data = await db.execute(sql`
+      SELECT csat_score AS score, count(*)::int AS count
+      FROM tickets WHERE organization_id = ${orgId} AND csat_score IS NOT NULL
+      GROUP BY csat_score ORDER BY csat_score
+    `);
+    headers = ["score", "count"];
+    rows = (data.rows as unknown as { score: number; count: number }[]).map((d) => [d.score, d.count]);
   } else if (dataset === "audit") {
     const data = await db
       .select({

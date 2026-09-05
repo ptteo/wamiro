@@ -19,6 +19,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -47,6 +48,16 @@ export const leaveStatusEnum = pgEnum("leave_status", [
   "approved",
   "rejected",
   "cancelled",
+]);
+export const attendanceCorrectionStatusEnum = pgEnum("attendance_correction_status", [
+  "pending",
+  "approved",
+  "rejected",
+]);
+export const attendanceCorrectionTypeEnum = pgEnum("attendance_correction_type", [
+  "clock_in",
+  "clock_out",
+  "missing",
 ]);
 export const scopeEnum = pgEnum("permission_scope", [
   "SELF",
@@ -92,6 +103,23 @@ export const organizations = pgTable(
       .$type<Record<string, boolean>>()
       .notNull()
       .default({}),
+    /** SaaS plan tier: starter | growth | scale (see src/modules/billing/plans). */
+    plan: text("plan").notNull().default("starter"),
+    /** Subscription lifecycle: trial | active | past_due | cancelled. */
+    billingStatus: text("billing_status").notNull().default("active"),
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    /** Seat cap override — NULL means the plan's seat limit applies. */
+    seatLimit: integer("seat_limit"),
+    /** Payment provider key once billing is wired (stripe, paddle…). */
+    billingProvider: text("billing_provider"),
+    billingCustomerId: text("billing_customer_id"),
+    billingSubscriptionId: text("billing_subscription_id"),
+    /** SCIM 2.0 provisioning (Phase C): enabled flag + hashed bearer token. */
+    scimEnabled: boolean("scim_enabled").notNull().default(false),
+    scimTokenHash: text("scim_token_hash"),
+    /** White-label (Phase D): company-owned CNAME domain, lazily verified. */
+    customDomain: text("custom_domain"),
+    customDomainVerified: boolean("custom_domain_verified").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -99,7 +127,13 @@ export const organizations = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [uniqueIndex("organizations_slug_key").on(t.slug)],
+  (t) => [
+    uniqueIndex("organizations_slug_key").on(t.slug),
+    uniqueIndex("organizations_custom_domain_key")
+      .on(t.customDomain)
+      .where(sql`${t.customDomain} IS NOT NULL`),
+    index("organizations_slug_lookup_idx").on(t.slug),
+  ],
 );
 
 // ---------- identity ----------
@@ -116,6 +150,12 @@ export const users = pgTable(
     name: text("name").notNull(),
     avatarUrl: text("avatar_url"),
     status: userStatusEnum("status").notNull().default("active"),
+    /** Throttled last-activity stamp (activation analytics; see session.ts). */
+    lastActiveAt: timestamp("last_active_at", { withTimezone: true }),
+    /** password | sso — governs which auth path may sign this identity in. */
+    authMethod: text("auth_method").notNull().default("password"),
+    /** Subject claim from the last successful SSO login (account matching). */
+    ssoSub: text("sso_sub"),
     /** TOTP (blueprint §57): present once setup begins; trusted only when totpEnabled */
     totpSecret: text("totp_secret"),
     totpEnabled: boolean("totp_enabled").notNull().default(false),
@@ -246,6 +286,84 @@ export const userPreferences = pgTable(
     index("prefs_user_idx").on(t.userId),
     uniqueIndex("prefs_global_key").on(t.userId, t.key).where(sql`organization_id IS NULL`),
     uniqueIndex("prefs_tenant_key").on(t.userId, t.organizationId, t.key),
+  ],
+);
+
+// ---------- Phase F: background jobs ledger (worker freshness for health) ----------
+
+export const platformJobRuns = pgTable("platform_job_runs", {
+  /** 'sla_sweep' | 'trial_sweep' | 'request_escalation' | 'governance_sweep' | 'mailbox_poll' */
+  job: text("job").primaryKey(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  ok: boolean("ok").notNull().default(false),
+  detail: jsonb("detail"),
+});
+
+// ---------- Phase E: audited impersonation (consent-gated, platform-only) ----------
+
+/**
+ * One support-impersonation window. A grant is created (and later revoked)
+ * BY THE TENANT admin — the platform operator can never self-serve access to
+ * a tenant that has not explicitly opted in. Sessions minted under a grant
+ * carry the grant id for the banner and the audit trail.
+ */
+export const impersonationGrants = pgTable(
+  "impersonation_grants",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    /** Tenant that granted access. */
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Tenant admin who approved the grant (consent). */
+    grantedByUserId: uuid("granted_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Optional named platform operator at grant time (informational). */
+    operatorLabel: text("operator_label"),
+    reason: text("reason").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("impersonation_grants_org_idx").on(t.organizationId, t.revokedAt),
+    index("impersonation_grants_expiry_idx").on(t.expiresAt),
+  ],
+);
+
+/** One impersonation window actually opened under a grant (audit ledger). */
+export const impersonationSessions = pgTable(
+  "impersonation_sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    grantId: uuid("grant_id")
+      .notNull()
+      .references(() => impersonationGrants.id, { onDelete: "cascade" }),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    operatorUserId: uuid("operator_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    targetUserId: uuid("target_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** SHA-256 of the minted session token — lets "stop" find the live row. */
+    sessionTokenHash: text("session_token_hash").notNull(),
+    /** SHA-256 of the operator's fresh "return" session, stored httpOnly. */
+    operatorReturnTokenHash: text("operator_return_token_hash").notNull(),
+    reason: text("reason").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("impersonation_sessions_token_key").on(t.sessionTokenHash),
+    index("impersonation_sessions_org_idx").on(t.organizationId, t.startedAt),
   ],
 );
 
@@ -550,6 +668,11 @@ export const employees = pgTable(
       .notNull()
       .default({}),
     hiredAt: date("hired_at"),
+    /** Departure date — stamped when employment ends (attrition source). */
+    leftAt: date("left_at"),
+    bankName: text("bank_name"),
+    bankAccountNo: text("bank_account_no"),
+    ifscCode: text("ifsc_code"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -607,10 +730,14 @@ export const attendanceRecords = pgTable(
     clockOut: timestamp("clock_out", { withTimezone: true }),
     source: text("source").notNull().default("web"),
     note: text("note"),
+    shiftTypeId: uuid("shift_type_id").references(() => shiftTypes.id, {
+      onDelete: "set null",
+    }),
   },
   (t) => [
     index("attendance_user_in_idx").on(t.userId, t.clockIn),
     index("attendance_org_in_idx").on(t.organizationId, t.clockIn),
+    index("attendance_shift_idx").on(t.shiftTypeId),
     // one open shift per user
     uniqueIndex("attendance_open_key").on(t.userId).where(sql`clock_out IS NULL`),
   ],
@@ -630,6 +757,8 @@ export const leaveTypes = pgTable(
       .notNull()
       .default("20"),
     paid: boolean("paid").notNull().default(true),
+    /** Frappe parity: when true, the annual quota is granted automatically on hire and each new year. */
+    autoAllocate: boolean("auto_allocate").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1389,7 +1518,7 @@ export const tickets = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     description: text("description").notNull(),
-    /** 'incident' | 'service_request' | 'access' | 'hardware' | 'software' | 'other' */
+    /** 'incident' | 'service_request' | 'access' | 'hardware' | 'software' | 'platform' | 'other' */
     category: text("category").notNull().default("other"),
     /** 'low' | 'medium' | 'high' | 'urgent' */
     priority: text("priority").notNull().default("medium"),
@@ -1401,8 +1530,30 @@ export const tickets = pgTable(
     assigneeId: uuid("assignee_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    /** Resolution SLA deadline (per-priority window from creation). */
     slaDueDate: timestamp("sla_due_date", { withTimezone: true }),
+    /** First-response SLA deadline (per-priority window from creation). */
+    firstResponseDueAt: timestamp("first_response_due_at", { withTimezone: true }),
+    /** Stamped once when an agent (tickets.manage) posts the first reply. */
+    firstResponseAt: timestamp("first_response_at", { withTimezone: true }),
+    /** 'ok' | 'at_risk' | 'breached' — derived on read, persisted by sweep/mutations. */
+    slaState: text("sla_state").notNull().default("ok"),
+    /** Guards the one-time SLA-at-risk notification. */
+    slaWarningNotifiedAt: timestamp("sla_warning_notified_at", { withTimezone: true }),
+    /** Guards the one-time SLA-breach notification. */
+    breachNotifiedAt: timestamp("breach_notified_at", { withTimezone: true }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    /** CSAT (1–5) submitted by the requester after resolution. */
+    csatScore: integer("csat_score"),
+    csatComment: text("csat_comment"),
+    /** Routing group (F2.5). */
+    groupId: uuid("group_id").references(() => ticketGroups.id, {
+      onDelete: "set null",
+    }),
+    /** Related knowledge article ids (F2.6). */
+    relatedKnowledgeIds: uuid("related_knowledge_ids").array().notNull().default([]),
+    /** Phase E: when platform ops pulled this ticket into their support queue. */
+    escalatedAt: timestamp("escalated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1411,6 +1562,9 @@ export const tickets = pgTable(
     index("tickets_org_status_idx").on(t.organizationId, t.status),
     index("tickets_requester_idx").on(t.requesterId),
     index("tickets_assignee_idx").on(t.assigneeId),
+    index("tickets_sla_state_idx").on(t.organizationId, t.slaState),
+    index("tickets_sla_due_idx").on(t.organizationId, t.slaDueDate),
+    index("tickets_escalated_idx").on(t.escalatedAt),
   ],
 );
 
@@ -1432,6 +1586,408 @@ export const ticketReplies = pgTable(
       .defaultNow(),
   },
   (t) => [index("replies_ticket_idx").on(t.ticketId, t.createdAt)],
+);
+
+export const ticketAttachments = pgTable(
+  "ticket_attachments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: uuid("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    replyId: uuid("reply_id").references(() => ticketReplies.id, {
+      onDelete: "set null",
+    }),
+    fileKey: text("file_key").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type"),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
+    uploadedBy: uuid("uploaded_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("ticket_attachments_ticket_idx").on(t.ticketId),
+    index("ticket_attachments_org_idx").on(t.organizationId),
+  ],
+);
+
+export const ticketGroups = pgTable(
+  "ticket_groups",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("ticket_groups_org_name_key").on(t.organizationId, sql`lower(${t.name})`),
+  ],
+);
+
+export const ticketGroupMembers = pgTable(
+  "ticket_group_members",
+  {
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => ticketGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.groupId, t.userId] }), index("ticket_group_members_user_idx").on(t.userId)],
+);
+
+// ---------- agent toolkit (Phase 7, Zammad parity) ----------
+
+export const ticketTags = pgTable(
+  "ticket_tags",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: uuid("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ticket_tags_org_ticket_name").on(t.organizationId, t.ticketId, t.name),
+    index("ticket_tags_ticket_idx").on(t.ticketId),
+  ],
+);
+
+export const ticketTimeEntries = pgTable(
+  "ticket_time_entries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: uuid("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    minutes: integer("minutes").notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("ticket_time_ticket_idx").on(t.ticketId, t.createdAt)],
+);
+
+export const ticketLinks = pgTable(
+  "ticket_links",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: uuid("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    linkedTicketId: uuid("linked_ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    /** 'related' | 'blocks' | 'duplicates' */
+    relation: text("relation").notNull().default("related"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ticket_links_unique").on(t.organizationId, t.ticketId, t.linkedTicketId, t.relation),
+    index("ticket_links_ticket_idx").on(t.ticketId),
+    index("ticket_links_linked_idx").on(t.linkedTicketId),
+  ],
+);
+
+export const cannedResponses = pgTable(
+  "canned_responses",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    category: text("category"),
+    body: text("body").notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    updatedBy: uuid("updated_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("canned_responses_org_idx").on(t.organizationId, t.name)],
+);
+
+export const ticketMacros = pgTable(
+  "ticket_macros",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** JSON array of { op, value } — set_status | set_priority | assign | add_tag | add_reply | add_note */
+    actions: jsonb("actions").notNull().default([]),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    updatedBy: uuid("updated_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("ticket_macros_org_idx").on(t.organizationId, t.name)],
+);
+
+export const assignmentRules = pgTable(
+  "assignment_rules",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    groupId: uuid("group_id").references(() => ticketGroups.id, {
+      onDelete: "set null",
+    }),
+    category: text("category"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("assignment_rules_org_idx").on(t.organizationId, t.active)],
+);
+
+// ---------- enterprise trust (Phase C) ----------
+
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    url: text("url").notNull(),
+    secret: text("secret").notNull(),
+    /** DomainEventType list this webhook receives; empty = all. */
+    events: text("events").array().notNull().default([]),
+    active: boolean("active").notNull().default(true),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    lastStatus: integer("last_status"),
+    lastError: text("last_error"),
+    lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("webhooks_org_idx").on(t.organizationId, t.active)],
+);
+
+export const ssoConfigs = pgTable(
+  "sso_configs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** 'oidc' | 'saml' (saml stored; execution via IdP bridge). */
+    provider: text("provider").notNull().default("oidc"),
+    issuer: text("issuer").notNull(),
+    clientId: text("client_id"),
+    clientSecret: text("client_secret"),
+    discoveryUrl: text("discovery_url"),
+    metadataUrl: text("metadata_url"),
+    enabled: boolean("enabled").notNull().default(false),
+    /** Auto-create the user on first successful SSO login. */
+    jitProvision: boolean("jit_provision").notNull().default(false),
+    defaultRoleKey: text("default_role_key").notNull().default("employee"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("sso_configs_org_unique").on(t.organizationId)],
+);
+
+export const ssoStates = pgTable(
+  "sso_states",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    state: text("state").notNull().unique(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    nonce: text("nonce").notNull(),
+    /** PKCE verifier (plaintext, one-time, 10-min TTL). */
+    codeVerifier: text("code_verifier"),
+    redirectTo: text("redirect_to"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("sso_states_expiry_idx").on(t.expiresAt)],
+);
+
+export const serviceItems = pgTable(
+  "service_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    category: text("category").notNull().default("other"),
+    icon: text("icon"),
+    expectedDays: integer("expected_days"),
+    approvalRequired: boolean("approval_required").notNull().default(true),
+    autoCreateTicket: boolean("auto_create_ticket").notNull().default(false),
+    requestTypeId: uuid("request_type_id").references(() => requestTypes.id, {
+      onDelete: "set null",
+    }),
+    active: boolean("active").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("service_items_org_idx").on(t.organizationId, t.active)],
+);
+
+export const itRecords = pgTable(
+  "it_records",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** 'incident' | 'problem' | 'change' */
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    impact: text("impact"),
+    priority: text("priority").notNull().default("medium"),
+    status: text("status").notNull().default("new"),
+    ownerId: uuid("owner_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    affectedService: text("affected_service"),
+    windowStart: timestamp("window_start", { withTimezone: true }),
+    windowEnd: timestamp("window_end", { withTimezone: true }),
+    risk: text("risk"),
+    ticketIds: uuid("ticket_ids").array().notNull().default([]),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("it_records_org_type_idx").on(t.organizationId, t.type),
+    index("it_records_org_status_idx").on(t.organizationId, t.status),
+  ],
+);
+
+export const mailboxMessages = pgTable(
+  "mailbox_messages",
+  {
+    messageKey: text("message_key").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    mailboxId: uuid("mailbox_id").references(() => mailboxes.id, {
+      onDelete: "set null",
+    }),
+    action: text("action").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("mailbox_messages_org_idx").on(t.organizationId)],
+);
+
+export const mailboxes = pgTable(
+  "mailboxes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    imapHost: text("imap_host").notNull(),
+    imapPort: integer("imap_port").notNull().default(993),
+    imapUser: text("imap_user").notNull(),
+    imapPass: text("imap_pass").notNull(),
+    useSsl: boolean("use_ssl").notNull().default(true),
+    enabled: boolean("enabled").notNull().default(true),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("mailboxes_org_idx").on(t.organizationId)],
 );
 
 // ---------- AI conversations ----------
@@ -1861,6 +2417,296 @@ export const jobChanges = pgTable(
   (t) => [index("job_changes_user_idx").on(t.userId)],
 );
 
+// ---------- shifts (HR ops) ----------
+
+export const shiftTypes = pgTable(
+  "shift_types",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    startMinutes: integer("start_minutes").notNull(),
+    endMinutes: integer("end_minutes").notNull(),
+    graceMinutes: integer("grace_minutes").notNull().default(15),
+    workingHours: numeric("working_hours", { precision: 4, scale: 2 }).notNull().default("8"),
+    color: text("color"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("shift_types_org_name_key").on(t.organizationId, sql`lower(${t.name})`),
+    index("shift_types_org_idx").on(t.organizationId),
+  ],
+);
+
+export const shiftAssignments = pgTable(
+  "shift_assignments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    shiftTypeId: uuid("shift_type_id")
+      .notNull()
+      .references(() => shiftTypes.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    /** { daysOfWeek: number[]; repeat: "weekly" } for range-assignments */
+    recurrence: jsonb("recurrence").$type<{ repeat: "weekly"; daysOfWeek: number[] } | null>(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("shift_assignments_org_user_date_key").on(t.organizationId, t.employeeUserId, t.date),
+    index("shift_assignments_org_date_idx").on(t.organizationId, t.date),
+  ],
+);
+
+// ---------- attendance corrections ----------
+
+export const attendanceCorrections = pgTable(
+  "attendance_corrections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recordDate: date("record_date").notNull(),
+    type: attendanceCorrectionTypeEnum("type").notNull(),
+    requestedInAt: timestamp("requested_in_at", { withTimezone: true }),
+    requestedOutAt: timestamp("requested_out_at", { withTimezone: true }),
+    reason: text("reason").notNull(),
+    status: attendanceCorrectionStatusEnum("status").notNull().default("pending"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    decidedNote: text("decided_note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("attendance_corrections_org_status_idx").on(t.organizationId, t.status),
+    index("attendance_corrections_org_employee_idx").on(t.organizationId, t.employeeUserId),
+  ],
+);
+
+// ---------- employee HR documents ----------
+
+export const employeeDocuments = pgTable(
+  "employee_documents",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    docType: text("doc_type").notNull().default("other"),
+    title: text("title").notNull(),
+    fileKey: text("file_key").notNull(),
+    mimeType: text("mime_type"),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
+    expiresAt: date("expires_at"),
+    uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("employee_documents_org_idx").on(t.organizationId),
+    index("employee_documents_org_employee_idx").on(t.organizationId, t.employeeUserId),
+  ],
+);
+
+// ---------- leave encashment ----------
+
+export const leaveEncashments = pgTable(
+  "leave_encashments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    leaveTypeId: uuid("leave_type_id")
+      .notNull()
+      .references(() => leaveTypes.id, { onDelete: "restrict" }),
+    days: numeric("days", { precision: 5, scale: 1 }).notNull(),
+    rate: numeric("rate", { precision: 12, scale: 2 }),
+    amount: numeric("amount", { precision: 12, scale: 2 }),
+    reason: text("reason"),
+    status: leaveStatusEnum("status").notNull().default("pending"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    decidedNote: text("decided_note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("leave_encashments_org_status_idx").on(t.organizationId, t.status),
+    index("leave_encashments_org_employee_idx").on(t.organizationId, t.employeeUserId),
+  ],
+);
+
+// ---------- salary advances (Phase 7, Frappe parity) ----------
+
+export const salaryAdvances = pgTable(
+  "salary_advances",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    reason: text("reason"),
+    /** 'pending' | 'approved' | 'rejected' | 'recovered' */
+    status: text("status").notNull().default("pending"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    reviewNote: text("review_note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("salary_advances_org_status_idx").on(t.organizationId, t.status),
+    index("salary_advances_user_idx").on(t.employeeUserId),
+  ],
+);
+
+// ---------- payroll (P4, native) ----------
+
+export const salaryComponents = pgTable(
+  "salary_components",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: text("type").notNull().default("earning"), // earning | deduction
+    amountType: text("amount_type").notNull().default("fixed"), // fixed | percent_of_basic
+    defaultAmount: numeric("default_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    isTaxable: boolean("is_taxable").notNull().default(true),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("salary_components_org_name_type_key").on(t.organizationId, sql`lower(${t.name})`, t.type),
+    index("salary_components_org_idx").on(t.organizationId),
+  ],
+);
+
+export const salaryStructures = pgTable(
+  "salary_structures",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    base: numeric("base", { precision: 14, scale: 2 }).notNull(),
+    currency: text("currency").notNull().default("USD"),
+    effectiveFrom: date("effective_from").notNull().defaultNow(),
+    status: text("status").notNull().default("draft"), // draft | active | superseded
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("salary_structures_org_idx").on(t.organizationId),
+    index("salary_structures_org_status_idx").on(t.organizationId, t.status),
+  ],
+);
+
+export const salaryStructureLines = pgTable(
+  "salary_structure_lines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    structureId: uuid("structure_id")
+      .notNull()
+      .references(() => salaryStructures.id, { onDelete: "cascade" }),
+    componentId: uuid("component_id")
+      .notNull()
+      .references(() => salaryComponents.id, { onDelete: "restrict" }),
+    amount: numeric("amount", { precision: 14, scale: 2 }),
+    percentOfBasic: numeric("percent_of_basic", { precision: 6, scale: 2 }),
+  },
+  (t) => [index("salary_structure_lines_structure_idx").on(t.structureId)],
+);
+
+export const payrollRuns = pgTable(
+  "payroll_runs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    periodLabel: text("period_label").notNull(),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    status: text("status").notNull().default("draft"), // draft | submitted | approved | paid
+    currency: text("currency").notNull().default("USD"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    submittedBy: uuid("submitted_by").references(() => users.id, { onDelete: "set null" }),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    paidBy: uuid("paid_by").references(() => users.id, { onDelete: "set null" }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("payroll_runs_org_idx").on(t.organizationId),
+    index("payroll_runs_org_status_idx").on(t.organizationId, t.status),
+  ],
+);
+
+export interface PayslipLine {
+  component: string;
+  amount: number;
+}
+
+export const payslips = pgTable(
+  "payslips",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => payrollRuns.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    employeeCode: text("employee_code"),
+    earnings: jsonb("earnings").$type<PayslipLine[]>().notNull().default([]),
+    deductions: jsonb("deductions").$type<PayslipLine[]>().notNull().default([]),
+    gross: numeric("gross", { precision: 14, scale: 2 }).notNull().default("0"),
+    totalDeductions: numeric("total_deductions", { precision: 14, scale: 2 }).notNull().default("0"),
+    net: numeric("net", { precision: 14, scale: 2 }).notNull().default("0"),
+    currency: text("currency").notNull().default("USD"),
+    locked: boolean("locked").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("payslips_run_employee_key").on(t.runId, t.employeeUserId),
+    index("payslips_org_idx").on(t.organizationId),
+    index("payslips_employee_idx").on(t.employeeUserId),
+  ],
+);
+
 export const profileChangeRequests = pgTable(
   "profile_change_requests",
   {
@@ -1877,4 +2723,46 @@ export const profileChangeRequests = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("profile_changes_user_idx").on(t.userId, t.status)],
+);
+
+// ---------- Phase D: web push subscriptions + shared rate limiting ----------
+
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull().unique(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("push_subscriptions_user_idx").on(t.organizationId, t.userId)],
+);
+
+export const rateLimitHits = pgTable(
+  "rate_limit_hits",
+  {
+    /** 'org' | 'ip' | 'key' */
+    scope: text("scope").notNull(),
+    key: text("key").notNull(),
+    /** Fixed-window epoch-second start. */
+    windowStart: bigint("window_start", { mode: "number" }).notNull(),
+    count: integer("count").notNull().default(1),
+  },
+  (t) => [
+    primaryKey({ columns: [t.scope, t.key, t.windowStart] }),
+    index("rate_limit_hits_expiry_idx").on(t.windowStart),
+  ],
 );

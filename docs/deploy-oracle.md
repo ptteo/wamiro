@@ -9,13 +9,13 @@ Memory budget on a 12 GB box:
 | --- | --- |
 | Wamiro (Next.js) | 0.5 GB |
 | Caddy | 0.1 GB |
-| Zammad stack (web+ws+worker+scheduler+redis) | 2.5 GB |
-| Elasticsearch (Zammad, heap capped 1g) | 1.5 GB |
-| MariaDB (Frappe) | 0.8 GB |
-| Redis (Frappe) | 0.3 GB |
-| Frappe bench + HR app + workers | 2.5 GB |
+| Wamiro mail worker (IMAP polling) | 0.1 GB |
 | Meilisearch / Paperless-ngx (optional later) | 1.0 GB |
-| OS + headroom | 2.8 GB |
+| OS + headroom | 10.3 GB |
+
+> Post-Phase-6 cutover: Frappe HR and Zammad are **no longer deployed** —
+> attendance, leave, payroll, and helpdesk run natively inside Wamiro.
+> Sections 4–5 moved to the historical appendix at the end of this file.
 
 ## 1. Instance
 
@@ -24,8 +24,6 @@ Memory budget on a 12 GB box:
 - Networking: allow inbound 80/443; SSH from your IP only
 - Attach/reserve a public IP; point DNS A records:
   - `wamiro.example.com` → app
-  - `helpdesk.example.com` → Zammad
-  - `hr.example.com` → Frappe
 
 > If creation fails with "out of capacity", retry periodically or upgrade to
 > Pay-As-You-Go (still free within Always Free limits, far better availability).
@@ -82,7 +80,27 @@ wamiro.example.com {
 }
 ```
 
-## 4. Zammad (Docker Compose)
+## 4. Verify
+
+```bash
+curl -s https://wamiro.example.com/api/v1/health   # {"ok":true,"db":true}
+```
+
+## 5. Backups
+
+- RDS automated backups cover all Wamiro data (including attachments and HR
+  documents under `WAMIRO_DATA_DIR`).
+
+---
+
+## Appendix A — Historical: Zammad + Frappe deployments (removed in Phase 6 cutover)
+
+The following sections describe the pre-cutover setup where Wamiro delegated
+helpdesk to Zammad and the HR employee master to Frappe HR. Both were removed
+in Phase 6 — the native `/tickets` module and the native people/payroll modules
+are the only implementation. Kept for historical record; do not reinstall.
+
+### A.1 Zammad (Docker Compose)
 
 ```bash
 cd /opt && git clone https://github.com/zammad/zammad-docker-compose.git zammad
@@ -107,7 +125,7 @@ helpdesk.example.com {
 
 (Compose exposes zammad-nginx on 8080.)
 
-## 5. Frappe HR (bench install — interactive)
+### A.2 Frappe HR (bench install — interactive)
 
 ```bash
 # prerequisites (MariaDB local, redis, python, node already present)
@@ -136,17 +154,5 @@ Create an API user in Frappe (API key/secret) with HR roles, then set in
 Wamiro's `.env`: `FRAPPE_BASE_URL=https://hr.example.com`,
 `FRAPPE_TOKEN=key:secret`. The Sync button appears under Admin.
 
-## 6. Verify
-
-```bash
-curl -s https://wamiro.example.com/api/v1/health   # {"ok":true,"db":true}
-docker compose -f /opt/zammad/docker-compose.yaml ps
-bench --site hr.example.com list-apps
-```
-
-## 7. Backups
-
-- RDS automated backups cover Wamiro data.
-- MariaDB (Frappe): `mysqldump` cron nightly to /opt/backups + weekly off-box copy.
 - Zammad volumes: back up Postgres DB (can live in RDS by creating a second
   database there and editing compose envs) and /opt/zammad.

@@ -27,7 +27,19 @@ export interface MyAttendanceData {
   todayMinutes: number;
   weekMinutes: number;
   daysWorkedThisWeek: number;
-  week: { date: string; minutes: number; isToday: boolean; hasShift: boolean }[];
+  week: {
+    date: string;
+    minutes: number;
+    isToday: boolean;
+    /** True when the person clocked in that day. */
+    hasShift: boolean;
+    /** Company holiday that day (no clock-in required). */
+    isHoliday?: boolean;
+    holidayName?: string | null;
+    /** Rostered shift that day, if any. */
+    scheduled?: boolean;
+    shiftLabel?: string | null;
+  }[];
   history: {
     id: string;
     userId: string;
@@ -264,7 +276,7 @@ function MiniStat({ label, value, sub }: { label: string; value: string; sub?: s
 function WeekStrip({
   week,
 }: {
-  week: { date: string; minutes: number; isToday: boolean; hasShift: boolean }[];
+  week: MyAttendanceData["week"];
 }) {
   const max = Math.max(8 * 60, ...week.map((d) => d.minutes));
   return (
@@ -289,7 +301,8 @@ function WeekStrip({
                 d.isToday
                   ? "border-brand/40 bg-brand-subtle"
                   : "border-border-subtle bg-surface",
-                !d.hasShift && "opacity-60",
+                d.isHoliday && "border-warning/30 bg-warning-subtle",
+                !d.hasShift && !d.isHoliday && "opacity-60",
               )}
             >
               <div className="flex items-baseline justify-between">
@@ -307,14 +320,26 @@ function WeekStrip({
                 <div
                   className={cx(
                     "w-full rounded-t",
-                    d.hasShift ? "bg-brand" : "bg-surface-subtle",
+                    d.isHoliday ? "bg-warning" : d.hasShift ? "bg-brand" : "bg-surface-subtle",
                   )}
                   style={{ height: `${heightPct}%`, minHeight: d.hasShift ? "4px" : 0 }}
                   aria-hidden
                 />
               </div>
-              <p className="text-center text-[10px] tabular-nums text-tertiary">
-                {d.hasShift ? fmtClockFor(d.minutes) : "—"}
+              <p
+                className={cx(
+                  "text-center text-[10px] tabular-nums",
+                  d.isHoliday ? "font-medium text-warning" : "text-tertiary",
+                )}
+                title={d.shiftLabel ?? undefined}
+              >
+                {d.isHoliday
+                  ? "Holiday"
+                  : d.scheduled
+                    ? d.shiftLabel?.slice(0, 11) ?? ""
+                    : d.hasShift
+                      ? fmtClockFor(d.minutes)
+                      : "—"}
               </p>
             </div>
           );

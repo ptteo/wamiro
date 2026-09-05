@@ -38,6 +38,10 @@ export interface SessionOrg {
   primaryColor: string;
   secondaryColor: string;
   modules: Record<string, boolean>;
+  plan: string;
+  billingStatus: string;
+  trialEndsAt: Date | null;
+  seatLimit: number | null;
 }
 
 export interface AuthContext {
@@ -153,6 +157,10 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
         primaryColor: organizations.primaryColor,
         secondaryColor: organizations.secondaryColor,
         modules: organizations.modules,
+        plan: organizations.plan,
+        billingStatus: organizations.billingStatus,
+        trialEndsAt: organizations.trialEndsAt,
+        seatLimit: organizations.seatLimit,
       },
     })
     .from(sessions)
@@ -176,6 +184,19 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
   if (row.org.status !== "active") {
     throw ApiError.forbidden("This organization is suspended");
   }
+  // Subscription gate: cancelled orgs lose access (like suspension). past_due
+  // stays usable so dunning UX can surface before a hard stop.
+  if (row.org.billingStatus === "cancelled") {
+    throw ApiError.forbidden("This organization's subscription has ended. Contact support to reactivate.");
+  }
+  // Throttled activity stamp (activation analytics). One UPDATE at most every
+  // five minutes per user — the WHERE clause makes the write cheap and safe
+  // to fire on every request without a pre-read.
+  void db
+    .update(users)
+    .set({ lastActiveAt: new Date() })
+    .where(and(eq(users.id, row.user.id), sql`(${users.lastActiveAt} IS NULL OR ${users.lastActiveAt} < now() - interval '5 minutes')`))
+    .catch(() => {});
 
   const [grantRows, overrideRows, roleRows] = await Promise.all([
     db

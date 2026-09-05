@@ -3,16 +3,22 @@ import { z } from "zod";
 
 import { route } from "@/lib/api";
 import { ApiError } from "@/lib/errors";
-import { createTicket, listTickets } from "@/modules/tickets/service";
+import { createTicket, listTickets, type SlaState } from "@/modules/tickets/service";
 
-export const GET = route(async (_req, { auth }) => {
-  return NextResponse.json({ tickets: await listTickets(auth) });
+/** Optional query filters: ?status=open&sla=at_risk|breached */
+export const GET = route(async (req, { auth }) => {
+  const sp = req.nextUrl.searchParams;
+  const status = sp.get("status") ?? undefined;
+  const slaParam = sp.get("sla");
+  const sla: SlaState | undefined =
+    slaParam === "at_risk" || slaParam === "breached" ? slaParam : undefined;
+  return NextResponse.json({ tickets: await listTickets(auth, { status, sla }) });
 });
 
 const createSchema = z.object({
   title: z.string().min(3).max(300),
   description: z.string().min(5).max(10_000),
-  category: z.enum(["incident", "service_request", "access", "hardware", "software", "other"]).optional(),
+  category: z.enum(["incident", "service_request", "access", "hardware", "software", "platform", "other"]).optional(),
   priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
 });
 

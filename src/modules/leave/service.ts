@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 
 import { db, first } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
@@ -10,6 +10,7 @@ import { resolveApprovalActors } from "@/modules/approvals/delegation";
 import {
   departments,
   employees,
+  holidays,
   leaveBalances,
   leaveRequests,
   leaveTypes,
@@ -21,7 +22,42 @@ const YEAR = new Date().getFullYear();
 
 // ---------- balances ----------
 
+/**
+ * Frappe parity: auto-allocation. Leave types flagged `auto_allocate` grant
+ * their annual quota to every employee on hire and at each new year. Running
+ * this reconciles the year's balance rows (idempotent via the unique
+ * user+type+year key) — called on every balance read so fresh hires and new
+ * years self-heal without a worker.
+ */
+export async function reconcileAnnualAllocations(ctx: AuthContext, year = YEAR) {
+  const orgId = ctx.user.organizationId;
+  const [autoTypes, members] = await Promise.all([
+    db
+      .select({ id: leaveTypes.id, annualQuotaDays: leaveTypes.annualQuotaDays })
+      .from(leaveTypes)
+      .where(and(eq(leaveTypes.organizationId, orgId), eq(leaveTypes.autoAllocate, true))),
+    db.select({ id: users.id }).from(users).where(eq(users.organizationId, orgId)),
+  ]);
+  if (autoTypes.length === 0 || members.length === 0) return;
+  await db
+    .insert(leaveBalances)
+    .values(
+      autoTypes.flatMap((t) =>
+        members.map((m) => ({
+          organizationId: orgId,
+          userId: m.id,
+          leaveTypeId: t.id,
+          year,
+          entitledDays: t.annualQuotaDays,
+          usedDays: "0",
+        })),
+      ),
+    )
+    .onConflictDoNothing();
+}
+
 export async function myBalances(ctx: AuthContext) {
+  await reconcileAnnualAllocations(ctx);
   return db
     .select({
       leaveTypeId: leaveBalances.leaveTypeId,
@@ -99,10 +135,25 @@ function businessDays(startStr: string, endStr: string): number {
   const end = new Date(`${endStr}T00:00:00Z`);
   if (Number.isNaN(+start) || Number.isNaN(+end)) throw ApiError.badRequest("Invalid dates");
   if (end < start) throw ApiError.badRequest("End date must be on or after start date");
-  // ponytail: calendar-day count incl. weekends; switch to working days when HR policy module lands
+  // calendar-day count incl. weekends; company holidays are subtracted below
   const days = Math.round((+end - +start) / 86_400_000) + 1;
   if (days > 365) throw ApiError.badRequest("Leave cannot exceed one year");
   return days;
+}
+
+/** Company holidays falling inside an inclusive date range (F3.4: not counted as leave days). */
+async function holidaysInRange(orgId: string, startStr: string, endStr: string): Promise<number> {
+  const [row] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(holidays)
+    .where(
+      and(
+        eq(holidays.organizationId, orgId),
+        gte(holidays.date, startStr),
+        lte(holidays.date, endStr),
+      ),
+    );
+  return row?.c ?? 0;
 }
 
 export async function apply(ctx: AuthContext, input: ApplyInput) {
@@ -120,7 +171,10 @@ export async function apply(ctx: AuthContext, input: ApplyInput) {
     .limit(1);
   if (!type) throw ApiError.notFound("Leave type not found");
 
-  const days = businessDays(input.startDate, input.endDate);
+  let days = businessDays(input.startDate, input.endDate);
+  // company holidays inside the range are not charged leave days
+  days -= await holidaysInRange(ctx.user.organizationId, input.startDate, input.endDate);
+  if (days <= 0) throw ApiError.badRequest("That period contains only company holidays");
 
   // balance check (only when a balance row exists)
   const [bal] = await db

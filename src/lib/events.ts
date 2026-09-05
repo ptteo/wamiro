@@ -5,6 +5,7 @@
  */
 import { db } from "@/lib/db";
 import { domainEvents } from "@/db/schema";
+import { deliverEvent } from "@/modules/webhooks/service";
 
 export type DomainEventType =
   | "user.created"
@@ -56,6 +57,19 @@ export async function emit(
         JSON.stringify({ level: "error", msg: "event_consumer_failed", eventType, err: String(e) }),
       );
     }
+  }
+
+  // Phase C — outgoing webhooks: push the same event to the org's endpoints
+  // (signed, fire-and-forget, never blocks the caller).
+  try {
+    void deliverEvent(organizationId, eventType, {
+      entityType,
+      entityId,
+      actorUserId,
+      payload: payload ?? undefined,
+    });
+  } catch (e) {
+    console.error(JSON.stringify({ level: "error", msg: "event_webhook_fanout_failed", eventType, err: String(e) }));
   }
 }
 

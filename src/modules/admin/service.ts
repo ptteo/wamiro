@@ -4,13 +4,17 @@
  * touch rows inside their own tenant.
  */
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import { db, first } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { emit } from "@/lib/events";
 import { ApiError } from "@/lib/errors";
 import { hashPassword } from "@/lib/password";
+import { enforceRateLimit } from "@/lib/ratelimit";
 import type { AuthContext } from "@/lib/session";
+import { assertSeatAvailable } from "@/modules/billing/service";
+import { sendInviteEmail } from "@/lib/mail/activation";
 import {
   employees,
   organizationMemberships,
@@ -77,6 +81,17 @@ export async function inviteUser(
 ): Promise<{ userId: string; tempPassword?: string; linked?: boolean }> {
   const email = input.email.trim().toLowerCase();
 
+  // Phase F: invite-spam guard — shared per-org window (email fan-out makes
+  // abuse expensive); default 100 invites/hour/org, env-tunable.
+  await enforceRateLimit("org", `invite:${ctx.user.organizationId}`, {
+    limit: Number(process.env.INVITE_RATE_LIMIT_PER_HOUR ?? 100),
+    windowSeconds: 3600,
+  });
+
+  // Seat enforcement: adding anyone (new invite or existing identity) must fit
+  // the organization's plan limit.
+  await assertSeatAvailable(ctx);
+
   const [existing] = await db
     .select({ id: users.id })
     .from(users)
@@ -110,6 +125,7 @@ export async function inviteUser(
       entityType: "user",
       entityId: existing.id,
     });
+    void emit(ctx.user.organizationId, "user.invited", "user", existing.id, ctx.user.id, { email }).catch(() => {});
     return { userId: existing.id, linked: true };
   }
 
@@ -159,6 +175,18 @@ export async function inviteUser(
     entityId: user.id,
     newValue: { roleKey: input.roleKey },
   });
+
+  // Activation (Phase A): email the invitee their one-time password when SMTP
+  // is configured; otherwise the admin sees it inline and shares it manually.
+  void sendInviteEmail({
+    to: email,
+    orgName: ctx.org.name,
+    inviterName: ctx.user.name,
+    tempPassword,
+  }).catch(() => {});
+
+  // Phase C: fan the provisioning event out to the org's webhooks.
+  void emit(ctx.user.organizationId, "user.created", "user", user.id, ctx.user.id, { email }).catch(() => {});
 
   return { userId: user.id, tempPassword };
 }
@@ -375,7 +403,7 @@ export async function logReviewKeep(
 
 // ---------- D9: admin home / user detail / lifecycle / sessions ----------
 
-import { ilike, inArray, or, sql } from "drizzle-orm";
+import { ilike, inArray, or } from "drizzle-orm";
 import {
   auditLogs,
   departments,
@@ -536,6 +564,17 @@ export async function setUserStatus(
     // offboarding step: access gone ⇒ live sessions die immediately
     const deleted = await db.delete(sessions).where(eq(sessions.userId, userId)).returning({ id: sessions.id });
     revokedSessions = deleted.length;
+    // record the departure date once — analytics attrition source
+    await db
+      .update(employees)
+      .set({ leftAt: sql`COALESCE(${employees.leftAt}, CURRENT_DATE)` })
+      .where(and(eq(employees.userId, userId), eq(employees.organizationId, ctx.user.organizationId)));
+  } else if (status === "active") {
+    // reinstated: clear the departure marker
+    await db
+      .update(employees)
+      .set({ leftAt: null })
+      .where(and(eq(employees.userId, userId), eq(employees.organizationId, ctx.user.organizationId)));
   }
 
   await audit({

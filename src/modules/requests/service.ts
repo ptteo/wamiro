@@ -686,6 +686,10 @@ export async function review(
   });
 
   if (done) {
+    await emit(orgId, "request.approved", "request", requestId, ctx.user.id, {
+      type: req.typeName,
+      requesterId: req.requesterId,
+    });
     await notify({
       organizationId: orgId,
       userId: req.requesterId,
@@ -743,13 +747,22 @@ async function resolveNextStepApprovers(
 // ---------- R8 §32: SLA escalation sweep ----------
 export async function escalateOverdue(ctx: AuthContext) {
   if (!can(ctx.access, "requests.manage")) throw ApiError.forbidden("Missing permission: requests.manage");
+  return escalateOverdueInOrg(ctx.user.organizationId);
+}
+
+/**
+ * Phase F: org-agnostic request-SLA escalation used by the background jobs
+ * worker. `escalated_at` set-once makes repeated runs idempotent.
+ */
+export async function escalateOverdueInOrg(orgId: string): Promise<number> {
+  const orgIdScope = orgId;
   const now = new Date();
   const overdue = await db
     .select({ id: requests.id, requesterId: requests.requesterId, slaDueAt: requests.slaDueAt })
     .from(requests)
     .where(
       and(
-        eq(requests.organizationId, ctx.user.organizationId),
+        eq(requests.organizationId, orgIdScope),
         eq(requests.status, "pending"),
         lt(requests.slaDueAt, now),
       ),
@@ -765,7 +778,7 @@ export async function escalateOverdue(ctx: AuthContext) {
     if (!upd[0]) continue; // already escalated
     escalated++;
     await emit(
-      ctx.user.organizationId,
+      orgIdScope,
       "request.created", // reuse manager-routing consumer for the nudge
       "request",
       r.id,
@@ -776,11 +789,11 @@ export async function escalateOverdue(ctx: AuthContext) {
     const [emp] = await db
       .select({ m: employees.managerUserId })
       .from(employees)
-      .where(and(eq(employees.userId, r.requesterId), eq(employees.organizationId, ctx.user.organizationId)))
+      .where(and(eq(employees.userId, r.requesterId), eq(employees.organizationId, orgIdScope)))
       .limit(1);
     if (emp?.m && emp.m !== r.requesterId) {
       await notify({
-        organizationId: ctx.user.organizationId,
+        organizationId: orgIdScope,
         userId: emp.m,
         type: "request",
         title: "SLA breached: request overdue",
@@ -790,11 +803,11 @@ export async function escalateOverdue(ctx: AuthContext) {
     }
   }
   await audit({
-    organizationId: ctx.user.organizationId,
-    actorUserId: ctx.user.id,
+    organizationId: orgIdScope,
+    actorUserId: null,
     action: "REQUESTS_ESCALATED",
     entityType: "request",
-    newValue: { escalated },
+    newValue: { escalated, source: "scheduled_worker" },
   });
   return escalated;
 }

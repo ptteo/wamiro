@@ -66,7 +66,7 @@ leave lifecycle, attendance.
 | ---------------------- | ----------------------------------- | ---------------------------- | --------- |
 | Next.js + NestJS       | Single Next.js app, `/api/v1` routes | One Lightsail box           | Extract modules/ to NestJS |
 | Keycloak identity      | Built-in sessions                   | JVM won't fit small instance | Swap loadAuthContext for OIDC callback |
-| Frappe HR engine       | Wamiro-owned attendance/leave tables | No second hosting dependency | Adapter interface per blueprint §32 |
+| Frappe HR + Zammad     | Fully native HR/support modules (people, attendance, leave, payroll, shifts, tickets, SLA, email intake) | No second hosting dependency; adapters removed in the Phase 6 cutover | Registry (`src/lib/providers/registry.ts`) if a future adapter is ever wanted |
 | Meilisearch/MinIO/etc. | Not yet                             | Phased per blueprint §88     | Add when phase reached |
 
 ## Known v1 limits (tracked)

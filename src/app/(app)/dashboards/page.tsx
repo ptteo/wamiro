@@ -8,6 +8,7 @@ import { isModuleEnabled } from "@/modules/iam/catalog";
 import { widestScope } from "@/modules/iam/engine";
 import { overview } from "@/modules/analytics/service";
 import { pinnedMetrics } from "@/modules/analytics/dashboards";
+import { dashboardExtras } from "@/modules/analytics/reports";
 
 export const metadata = { title: "Dashboards" };
 
@@ -50,6 +51,7 @@ export default async function DashboardsPage() {
     on_leave_today: data.onLeaveToday,
     pending_approvals: data.pendingApprovals,
     approval_latency_hours: Number(data.approvalLatencyHours),
+    ...(await dashboardExtras(ctx)),
   };
 
   return (

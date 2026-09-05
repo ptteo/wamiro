@@ -11,8 +11,6 @@ import { can } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
 import { listOrgSessions, getAdminOverview } from "@/modules/admin/service";
 import { SessionRevokeButton } from "@/components/admin-user-actions";
-import { zammadConfig } from "@/modules/integrations/zammad";
-import { frappeConfig } from "@/modules/integrations/frappe";
 
 export const metadata = { title: "Security center" };
 
@@ -29,12 +27,7 @@ export default async function SecurityCenterPage() {
     );
   }
 
-  const [overview, sessions, zammad, frappe] = await Promise.all([
-    getAdminOverview(ctx),
-    listOrgSessions(ctx),
-    Promise.resolve(zammadConfig()),
-    Promise.resolve(frappeConfig()),
-  ]);
+  const [overview, sessions] = await Promise.all([getAdminOverview(ctx), listOrgSessions(ctx)]);
 
   const mfaPct = overview.users.total
     ? Math.round((overview.users.mfaEnabled / overview.users.total) * 100)
@@ -135,8 +128,8 @@ export default async function SecurityCenterPage() {
       </AdminSection>
 
       <AdminSection
-        title="Providers"
-        subtitle="Optional adapters. Core product works without them."
+        title="Security events"
+        subtitle="Security-relevant audit trail."
         action={
           <Link
             href={`/admin/audit?action=${encodeURIComponent(SECURITY_AUDIT_QUERY)}`}
@@ -146,16 +139,10 @@ export default async function SecurityCenterPage() {
           </Link>
         }
       >
-        <ul className="divide-y divide-border-subtle text-sm">
-          <li className="flex items-center justify-between py-2.5">
-            <span className="text-tertiary">Frappe HR</span>
-            <Badge tone={frappe ? "green" : "neutral"}>{frappe ? "Configured" : "Not configured"}</Badge>
-          </li>
-          <li className="flex items-center justify-between py-2.5">
-            <span className="text-tertiary">Zammad helpdesk</span>
-            <Badge tone={zammad ? "green" : "neutral"}>{zammad ? "Configured" : "Not configured"}</Badge>
-          </li>
-        </ul>
+        <p className="py-4 text-sm text-tertiary">
+          Sign-ins, failed logins, session revocations, and security-relevant events are audited and
+          exportable from the Audit Log.
+        </p>
       </AdminSection>
     </div>
   );

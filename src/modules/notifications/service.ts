@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { sendEmail } from "@/lib/mailer";
+import { appUrl, renderBrandedEmail, sendEmail } from "@/lib/mailer";
 import type { AuthContext } from "@/lib/session";
 import { notifications, users } from "@/db/schema";
 
@@ -20,6 +20,7 @@ export type NotificationKind =
   | "team"              // team.member_added
   | "announcement"      // announcement broadcast
   | "asset"             // asset.assigned
+  | "ticket"            // ticket.assigned / .updated / .resolved / .sla_warning / .sla_breached / .reply
   | "automation"        // automation.matched
   | "governance"        // governance obligation overdue
   | "recognition"       // recognition given
@@ -56,6 +57,17 @@ export async function notify(input: NotifyInput): Promise<void> {
       console.error(JSON.stringify({ level: "error", msg: "email_deliver_async_failed", err: String(e) })),
     );
   }
+
+  // web push copy (Phase D) — needs VAPID keys configured; best-effort only
+  void import("@/modules/push/service").then(({ deliverPushNotifications }) =>
+    deliverPushNotifications({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      message: { title: input.title, body: input.body, url: input.link },
+    }).catch((e) =>
+      console.error(JSON.stringify({ level: "error", msg: "push_deliver_failed", err: String(e) })),
+    ),
+  );
 }
 
 async function deliverEmail(input: NotifyInput): Promise<void> {
@@ -65,26 +77,15 @@ async function deliverEmail(input: NotifyInput): Promise<void> {
     .where(eq(users.id, input.userId))
     .limit(1);
   if (!u) return;
-  const appUrl = process.env.APP_URL ?? "http://localhost:3000";
-  const url = `${appUrl}${input.link ?? ""}`;
-  const html = `
-    <div style="font-family:system-ui,sans-serif;max-width:480px;margin:auto">
-      <h2 style="font-size:16px;color:#0f172a">${escapeHtml(input.title)}</h2>
-      ${input.body ? `<p style="color:#475569;font-size:14px">${escapeHtml(input.body)}</p>` : ""}
-      <p style="margin-top:16px">
-        <a href="${url}" style="background:#4f46e5;color:#fff;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px">Open Wamiro</a>
-      </p>
-      <p style="color:#94a3b8;font-size:11px;margin-top:24px">You are receiving this because of activity in your Wamiro workspace.</p>
-    </div>`;
+  const url = `${appUrl()}${input.link ?? ""}`;
+  const html = renderBrandedEmail({
+    title: input.title,
+    body: input.body ?? "There is something new waiting for you in Wamiro.",
+    actionLabel: "Open Wamiro",
+    actionUrl: url,
+  });
   await sendEmail(u.email, input.title, html);
 }
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
-
-// avoid a hard import cycle with mailer config probing
-// (kept as a comment marker: SMTP_URL is read inline above)
 
 export async function listMine(ctx: AuthContext, limit = 30) {
   return db

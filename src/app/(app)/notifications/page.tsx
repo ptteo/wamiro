@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { NotificationsClient } from "@/components/notifications-client";
+import { PushSettings } from "@/components/push-settings";
 import { requireAuthPage } from "@/lib/page-auth";
 import { listMine } from "@/modules/notifications/service";
 
@@ -27,16 +28,19 @@ export default async function NotificationsPage({
     : items;
 
   return (
-    <NotificationsClient
-      items={filtered.map((n) => ({
-        id: n.id,
-        type: n.type,
-        title: n.title,
-        body: n.body,
-        link: n.link,
-        read: n.readAt !== null,
-        createdAt: n.createdAt.toISOString(),
-      }))}
-    />
+    <div className="mx-auto w-full max-w-[820px] space-y-5">
+      <PushSettings />
+      <NotificationsClient
+        items={filtered.map((n) => ({
+          id: n.id,
+          type: n.type,
+          title: n.title,
+          body: n.body,
+          link: n.link,
+          read: n.readAt !== null,
+          createdAt: n.createdAt.toISOString(),
+        }))}
+      />
+    </div>
   );
 }

@@ -2,8 +2,9 @@
 
 Authoritative mapping from product capability → provider, per
 `docs/Wamiro_R&D_Master_Package/04_WAMIRO_OPEN_SOURCE_PROVIDER_REGISTRY.md`.
-Code source of truth: `src/lib/providers/registry.ts` (booleans-only status at
-`GET /api/v1/admin/integrations`, gated `settings.manage`).
+Code source of truth: `src/lib/providers/registry.ts`. Post-Phase-6 cutover,
+HR and helpdesk are fully native (`active: null`, status `integrated`); the
+Frappe/Zammad adapters and the admin status API were removed.
 
 ## Hard rules honored
 
@@ -15,8 +16,8 @@ Code source of truth: `src/lib/providers/registry.ts` (booleans-only status at
 
 | Capability | Built-in (core) | Optional external adapter | License to verify | Status |
 |---|---|---|---|---|
-| hr | wamiro-people | Frappe HR sync (existing) | GPL obligations on integration | optional |
-| itsm | wamiro-support | Zammad (existing) | AGPL — server-side API only, no client redistribution | optional |
+| hr | wamiro-people (attendance, leave, payroll, shifts, corrections, documents, encashment) | — (Frappe adapter removed in Phase 6) | n/a | integrated |
+| itsm | wamiro-support (tickets, SLA, catalog, IT records, email intake, groups, CSAT) | — (Zammad adapter removed in Phase 6) | n/a | integrated |
 | storage | local-disk | MinIO (S3 API) at scale | AGPL-3.0 | integrated |
 | search | postgres-ilike + permission-first ordering | Meilisearch for fuzzy/scale | MIT | integrated |
 | email | SMTP | — | n/a | integrated |
@@ -29,14 +30,13 @@ Code source of truth: `src/lib/providers/registry.ts` (booleans-only status at
 
 ## Abstraction rule (§5)
 
-Feature code imports domain services (`people`, `support`, `finance`, …) which
-own their provider calls behind config probes (`frappeConfig()`,
-`zammadConfig()`). The registry is now the single place a new adapter gets
-plugged in; UI/admin surfaces read `registryStatus()` and never see secrets.
+Feature code imports domain services (`people`, `support`, `finance`, …)
+directly — every capability is a native module, so no config probes remain.
+The registry stays as the single place a future adapter would be plugged in;
+UI/admin surfaces read `registryStatus()` and never see secrets.
 
 ## Fallback contract (§6)
 
-Every optional adapter degrades to its built-in implementation when
-unconfigured or unhealthy (proven by E2E: Zammad-unconfigured returns a clean,
-explained 400; AI unconfigured returns 503 with user-safe copy). Health/retry/
-reconciliation land with each adapter's hardening pass.
+HR and helpdesk capabilities are native and always available — there is no
+adapter to degrade. Optional capabilities (AI, email, storage at scale) still
+degrade to their built-in implementation when unconfigured or unhealthy.

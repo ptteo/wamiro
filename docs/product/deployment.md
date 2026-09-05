@@ -19,8 +19,6 @@
 | `STORAGE_*` | Object storage endpoint/bucket/keys | if documents used |
 | `SMTP_*` | Outbound email | if invitations used |
 | `OPENAI_API_KEY` / provider key | AI chat + embeddings | optional |
-| `FRAPPE_*` | Frappe HR integration | optional |
-| `ZAMMAD_*` | Zammad helpdesk integration | optional |
 
 Never commit `.env`. Provision secrets through your platform's secret store.
 
