@@ -77,8 +77,12 @@ export async function listUsersWithRoles(ctx: AuthContext): Promise<AdminUserRow
 
 export async function inviteUser(
   ctx: AuthContext,
-  input: { name: string; email: string; roleKey: string },
-): Promise<{ userId: string; tempPassword?: string; linked?: boolean }> {
+  input: { name: string; email: string; roleKey: string; legacy?: boolean; managerUserId?: string },
+): Promise<{ userId: string; tempPassword?: string; linked?: boolean; inviteUrl?: string; inviteId?: string }> {
+  if (!input.legacy) {
+    const { createInvitation } = await import("@/modules/invitations/service");
+    return createInvitation(ctx, input);
+  }
   const email = input.email.trim().toLowerCase();
 
   // Phase F: invite-spam guard — shared per-org window (email fan-out makes
@@ -564,6 +568,11 @@ export async function setUserStatus(
     // offboarding step: access gone ⇒ live sessions die immediately
     const deleted = await db.delete(sessions).where(eq(sessions.userId, userId)).returning({ id: sessions.id });
     revokedSessions = deleted.length;
+    const [gone] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1);
+    if (gone) {
+      const { invalidateInvitesForUser } = await import("@/modules/invitations/service");
+      await invalidateInvitesForUser(ctx.user.organizationId, userId, gone.email);
+    }
     // record the departure date once — analytics attrition source
     await db
       .update(employees)

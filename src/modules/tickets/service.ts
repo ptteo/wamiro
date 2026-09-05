@@ -8,7 +8,7 @@
  * external dependency. SLA math is pure (`slaStateOf` / `slaBucketOf`) and
  * unit-tested in `sla.test.ts`.
  */
-import { and, asc, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import { db } from "@/lib/db";
@@ -530,20 +530,28 @@ export async function sweepOrgSlaStates(orgId: string): Promise<{
   breached: number;
 }> {
   const orgIdScope = orgId;
-  const open = await db
-    .select()
-    .from(tickets)
-    .where(
-      and(
-        eq(tickets.organizationId, orgIdScope),
-        sql`${tickets.status} NOT IN ('resolved', 'closed')`,
-      ),
-    )
-    .limit(200);
-
-  const result = { checked: open.length, updated: 0, warned: 0, breached: 0 };
+  const result = { checked: 0, updated: 0, warned: 0, breached: 0 };
   const now = new Date();
-  for (const t of open) {
+  const PAGE = 200;
+  const MAX_PAGES = 50; // 10k open tickets/org per tick; remainder waits for the next run
+  let afterId: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const open = await db
+      .select()
+      .from(tickets)
+      .where(
+        and(
+          eq(tickets.organizationId, orgIdScope),
+          sql`${tickets.status} NOT IN ('resolved', 'closed')`,
+          afterId ? gt(tickets.id, afterId) : undefined,
+        ),
+      )
+      .orderBy(asc(tickets.id))
+      .limit(PAGE);
+    if (open.length === 0) break;
+    afterId = open[open.length - 1]!.id;
+    result.checked += open.length;
+    for (const t of open) {
     const state = slaStateOf(t, now);
     if (state !== t.slaState) {
       await persistSlaState(orgIdScope, t.id, state);
@@ -582,6 +590,7 @@ export async function sweepOrgSlaStates(orgId: string): Promise<{
           link: `/tickets/${t.id}`,
         });
       }
+    }
     }
   }
   return result;

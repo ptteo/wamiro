@@ -164,6 +164,7 @@ export const PERMISSION_GROUPS: { group: string; permissions: string[] }[] = [
     group: "Administration",
     permissions: [
       "users.manage",
+      "team.invite",
       "roles.manage",
       "audit.view",
       "data.export",
@@ -263,6 +264,7 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["analytics.view_team", "TEAM"],
       ["tasks.view_team", "TEAM"],
       ["projects.create", "COMPANY"],
+      ["team.invite", "TEAM"],
     ],
   },
   {
@@ -304,6 +306,7 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
       ["workplace.manage", "COMPANY"],
       ["governance.manage", "COMPANY"],
       ["governance.view", "COMPANY"],
+      ["team.invite", "COMPANY"],
     ],
   },
   {
@@ -327,6 +330,7 @@ export const SYSTEM_ROLES: readonly SystemRoleTemplate[] = [
     grants: [
       ...EMPLOYEE_BASE,
       ["users.manage", "COMPANY"],
+      ["team.invite", "COMPANY"],
       ["roles.manage", "COMPANY"],
       ["departments.manage", "COMPANY"],
       ["teams.manage", "COMPANY"],

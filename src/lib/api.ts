@@ -73,6 +73,16 @@ export function route(
         if (opts.permission && !can(auth.access, opts.permission)) {
           throw ApiError.forbidden(`Missing permission: ${opts.permission}`);
         }
+        const path = req.nextUrl.pathname;
+        const { needsMfaSetup, onboardingComplete, isGatedApiPath, isMfaAllowedPath } = await import(
+          "@/modules/org/policies"
+        );
+        if (needsMfaSetup(auth) && !isMfaAllowedPath(path)) {
+          throw ApiError.forbidden("Enable MFA in Settings → Security to continue");
+        }
+        if (!onboardingComplete(auth.org.onboardingState) && isGatedApiPath(path)) {
+          throw ApiError.forbidden("Finish company setup to use this feature");
+        }
 
         // Phase D — platform-grade per-tenant rate limit on mutating calls.
         // Shared (DB-backed) so it holds across instances. Reads are exempt

@@ -120,6 +120,14 @@ export const organizations = pgTable(
     /** White-label (Phase D): company-owned CNAME domain, lazily verified. */
     customDomain: text("custom_domain"),
     customDomainVerified: boolean("custom_domain_verified").notNull().default(false),
+    /** Phase 1 — empty = any domain. Compared case-insensitively to the email host. */
+    allowedEmailDomains: jsonb("allowed_email_domains").$type<string[]>().notNull().default([]),
+    /** optional | required_admins | required_all */
+    mfaMode: text("mfa_mode").notNull().default("optional"),
+    /** self_service | managed */
+    passwordMode: text("password_mode").notNull().default("self_service"),
+    /** pending | admin_done | employees_seeded | complete. Existing orgs stay complete. */
+    onboardingState: text("onboarding_state").notNull().default("complete"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -160,6 +168,8 @@ export const users = pgTable(
     totpSecret: text("totp_secret"),
     totpEnabled: boolean("totp_enabled").notNull().default(false),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    /** Phase 1 — account lockout after repeated failed logins. */
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -196,6 +206,67 @@ export const sessions = pgTable(
     uniqueIndex("sessions_token_key").on(t.tokenHash),
     index("sessions_user_idx").on(t.userId),
   ],
+);
+
+export const invitationTokens = pgTable(
+  "invitation_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    email: text("email").notNull(),
+    name: text("name").notNull(),
+    roleKey: text("role_key").notNull(),
+    invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+    managerUserId: uuid("manager_user_id").references(() => users.id, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("invitation_tokens_hash_key").on(t.tokenHash),
+    index("invitation_tokens_org_idx").on(t.organizationId),
+    index("invitation_tokens_email_idx").on(t.organizationId, t.email),
+  ],
+);
+
+export const passwordResetTokens = pgTable(
+  "password_reset_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("password_reset_tokens_hash_key").on(t.tokenHash),
+    index("password_reset_tokens_user_idx").on(t.userId),
+  ],
+);
+
+export const passwordChangeRequests = pgTable(
+  "password_change_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("password_change_requests_org_idx").on(t.organizationId, t.status)],
 );
 
 // ---------- D14 Workplace: resources + bookings ----------

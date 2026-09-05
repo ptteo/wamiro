@@ -26,10 +26,22 @@ import { advancesInPeriod } from "@/modules/payroll/advances";
  *   net = base + earnings − deductions
  * Earnings/deductions come from structure lines (fixed amounts or % of base);
  * the base itself is always an earning. Worked days within the period pro-rate
- * every amount (no attendance on record → full month). Leave-encashment
- * approvals inside the period are added as an earning automatically. Runs move
- * draft → submitted → approved → paid; payslips lock on payment.
+ * every amount. No attendance *and* no leave on record → full month (tenants
+ * that do not clock in). Leave-encashment approvals inside the period are
+ * added as an earning automatically. Runs move draft → submitted → approved
+ * → paid; payslips lock on payment.
  */
+
+/** Pure ratio used by `prorationFactor`. Exported for unit tests. */
+export function prorationRatio(input: {
+  expectedDays: number;
+  creditedDays: number;
+  hasAttendanceOrLeave: boolean;
+}): number {
+  if (input.expectedDays <= 0) return 1;
+  if (!input.hasAttendanceOrLeave) return 1;
+  return Math.min(1, Math.max(0, input.creditedDays / input.expectedDays));
+}
 
 async function ensureManage(ctx: AuthContext): Promise<void> {
   if (!can(ctx.access, "payroll.manage")) {
@@ -439,11 +451,11 @@ async function activeStructureLines(
 }
 
 /**
- * Worked-day ratio inside a period: (attendance days + approved paid-leave
- * days) / scheduled workdays. Approved PAID leave counts as worked (an
- * employee on approved annual leave must not be silently underpaid);
- * UNPAID leave days are excluded from credit. Holidays are excluded from
- * the expected-day denominator, so they neither help nor hurt.
+ * Worked-day ratio inside a period: |clock-in ∪ approved paid-leave| /
+ * scheduled workdays. Clock-in and paid leave on the same day count once.
+ * UNPAID leave is not credited (and a month of only unpaid leave is not
+ * treated as "no attendance → full pay"). Holidays are excluded from the
+ * expected-day denominator, so they neither help nor hurt.
  */
 async function prorationFactor(orgId: string, employeeUserId: string, startIso: string, endIso: string): Promise<number> {
   const expectedRes = await db.execute(sql`
@@ -462,31 +474,53 @@ async function prorationFactor(orgId: string, employeeUserId: string, startIso: 
       WHERE EXTRACT(ISODOW FROM d) < 6
         AND NOT EXISTS (SELECT 1 FROM holidays h WHERE h.organization_id = ${orgId} AND h.date = d::date)
     ),
-    paid_leave AS (
-      SELECT DISTINCT lr.start_date, lr.end_date
+    leave_ranges AS (
+      SELECT lr.start_date, lr.end_date, lt.paid
       FROM leave_requests lr
       JOIN leave_types lt ON lt.id = lr.leave_type_id
       WHERE lr.organization_id = ${orgId}
         AND lr.user_id = ${employeeUserId}
         AND lr.status = 'approved'
-        AND lt.paid = true
         AND lr.end_date >= ${startIso}::date
         AND lr.start_date <= ${endIso}::date
+    ),
+    clocked AS (
+      SELECT DISTINCT a.clock_in::date AS day
+      FROM attendance_records a
+      WHERE a.organization_id = ${orgId}
+        AND a.user_id = ${employeeUserId}
+        AND a.clock_in::date >= ${startIso}::date
+        AND a.clock_in::date <= ${endIso}::date
+        AND EXISTS (SELECT 1 FROM workdays w WHERE w.day = a.clock_in::date)
+    ),
+    paid_days AS (
+      SELECT w.day FROM workdays w
+      WHERE EXISTS (SELECT 1 FROM leave_ranges p WHERE p.paid = true AND w.day BETWEEN p.start_date AND p.end_date)
+    ),
+    unpaid_days AS (
+      SELECT w.day FROM workdays w
+      WHERE EXISTS (SELECT 1 FROM leave_ranges p WHERE p.paid = false AND w.day BETWEEN p.start_date AND p.end_date)
+    ),
+    credited AS (
+      SELECT day FROM clocked
+      UNION
+      SELECT day FROM paid_days
     )
     SELECT
-      (SELECT count(DISTINCT a.clock_in::date) FROM attendance_records a
-        WHERE a.organization_id = ${orgId}
-          AND a.user_id = ${employeeUserId}
-          AND a.clock_in::date >= ${startIso}::date
-          AND a.clock_in::date <= ${endIso}::date) AS worked,
-      (SELECT count(*) FROM workdays w
-        WHERE EXISTS (SELECT 1 FROM paid_leave p WHERE w.day BETWEEN p.start_date AND p.end_date)) AS leave_days
+      (SELECT count(*) FROM clocked) AS clocked,
+      (SELECT count(*) FROM paid_days) AS paid_leave,
+      (SELECT count(*) FROM unpaid_days) AS unpaid_leave,
+      (SELECT count(*) FROM credited) AS credited
   `);
-  const workedDays = Number(creditRes.rows[0]?.worked ?? 0);
-  const paidLeaveDays = Number(creditRes.rows[0]?.leave_days ?? 0);
-  const credited = workedDays + paidLeaveDays;
-  if (credited <= 0) return 1; // no attendance on record → treat as full month
-  return Math.min(1, credited / expectedDays);
+  const clocked = Number(creditRes.rows[0]?.clocked ?? 0);
+  const paidLeave = Number(creditRes.rows[0]?.paid_leave ?? 0);
+  const unpaidLeave = Number(creditRes.rows[0]?.unpaid_leave ?? 0);
+  const credited = Number(creditRes.rows[0]?.credited ?? 0);
+  return prorationRatio({
+    expectedDays,
+    creditedDays: credited,
+    hasAttendanceOrLeave: clocked + paidLeave + unpaidLeave > 0,
+  });
 }
 
 async function encashmentsInPeriod(orgId: string, employeeUserId: string, startIso: string, endIso: string): Promise<number> {
@@ -672,17 +706,21 @@ export async function computeRun(ctx: AuthContext, runId: string): Promise<{ cou
       ),
     );
 
-  await db.delete(payslips).where(eq(payslips.runId, runId));
-
   const start = String(run.periodStart);
   const end = String(run.periodEnd);
-  let count = 0;
+  // Pre-validate every structure *before* deleting existing slips so a
+  // mid-loop throw cannot leave a half-written run.
+  const payloads: NonNullable<Awaited<ReturnType<typeof computePayslipFor>>>[] = [];
   for (const emp of staff) {
     const calc = await computePayslipFor(orgId, emp.employeeUserId, start, end, emp.employeeCode, run.currency);
-    if (!calc) continue;
-    await db
-      .insert(payslips)
-      .values({
+    if (calc) payloads.push(calc);
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.delete(payslips).where(eq(payslips.runId, runId));
+    if (payloads.length === 0) return;
+    await tx.insert(payslips).values(
+      payloads.map((calc) => ({
         organizationId: orgId,
         runId,
         employeeUserId: calc.employeeUserId,
@@ -693,19 +731,10 @@ export async function computeRun(ctx: AuthContext, runId: string): Promise<{ cou
         totalDeductions: String(calc.totalDeductions),
         net: String(calc.net),
         currency: calc.currency,
-      })
-      .onConflictDoUpdate({
-        target: [payslips.runId, payslips.employeeUserId],
-        set: {
-          earnings: calc.earnings,
-          deductions: calc.deductions,
-          gross: String(calc.gross),
-          totalDeductions: String(calc.totalDeductions),
-          net: String(calc.net),
-        },
-      });
-    count += 1;
-  }
+      })),
+    );
+  });
+  const count = payloads.length;
   await audit({
     organizationId: orgId,
     actorUserId: ctx.user.id,
@@ -961,9 +990,9 @@ export async function getPayslip(ctx: AuthContext, payslipId: string) {
     .where(and(eq(payslips.id, payslipId), eq(payslips.organizationId, orgId)))
     .limit(1);
   if (!row) throw ApiError.notFound();
-  const ownerOrManager = row.employeeUserId === ctx.user.id || manage;
-  if (!ownerOrManager) throw ApiError.forbidden("You can only view your own payslips");
-  if (row.employeeUserId !== ctx.user.id && !manage) throw ApiError.forbidden("You can only view your own payslips");
+  if (row.employeeUserId !== ctx.user.id && !manage) {
+    throw ApiError.forbidden("You can only view your own payslips");
+  }
   const approvedOnly = row.runStatus === "approved" || row.runStatus === "paid" || manage;
   if (!approvedOnly) throw ApiError.forbidden("Payslips become visible after the run is approved");
   return {

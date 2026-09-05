@@ -24,6 +24,7 @@ import { ClockInButton } from "@/components/clock-button";
 import { requireAuthPage } from "@/lib/page-auth";
 import { homeSummary } from "@/modules/home/service";
 import { setupChecklist, type SetupStep } from "@/modules/org/service";
+import { syncOnboardingState } from "@/modules/org/policies";
 import { can } from "@/modules/iam/engine";
 import type {
   ActivityItem,
@@ -196,6 +197,7 @@ export default async function HomePage() {
   const personas: Persona[] = s.personas;
   const canSee = (p: string) => can(ctx.access, p);
   const isSetupAdmin = can(ctx.access, "settings.manage") || can(ctx.access, "users.manage");
+  if (isSetupAdmin) await syncOnboardingState(ctx);
   const setup = isSetupAdmin ? await setupChecklist(ctx) : null;
 
   const firstName = ctx.user.name.split(/\s+/)[0] ?? ctx.user.name;

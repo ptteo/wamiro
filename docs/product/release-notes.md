@@ -4,6 +4,24 @@ Each production release records: version, date, highlights, migration notes,
 known issues, rollback guidance. Newest first. Copy this template for new
 entries.
 
+## v0.2.1 — Phase 0 hardening
+
+### Highlights
+- Payroll proration credits approved paid leave (no double-count with clock-in); unpaid-only months are no longer treated as full pay.
+- Payroll `computeRun` pre-validates then writes inside one transaction.
+- Email-to-ticket parses multipart (HTML + attachments); IMAP passwords encrypted at rest (`SECRET_KEY`).
+- SLA sweep and platform support queue paginate past the old 200-row cap.
+- Deploy runbooks: bind Next to loopback + Caddy `trusted_proxies`.
+
+### Migration notes
+- Set `SECRET_KEY` in production before connecting a new mailbox. Existing plaintext IMAP passwords still decrypt; they are upgraded on the next successful poll.
+
+### Known issues
+- Invitation token links, password reset, and the onboarding gate are Phase 1 (not this release).
+
+### Rollback guidance
+- Redeploy previous tag. No schema change in this release.
+
 ## Template
 
 ```markdown
@@ -64,8 +82,7 @@ entries.
 - Apply all migrations via `node scripts/migrate.mjs` (idempotent).
 
 ### Known issues
-- SSO not yet implemented (password + MFA only).
-- Rate limiting is per-instance; front horizontal deployments with a proxy limiter.
+- (Superseded — SSO/OIDC + DB-backed rate limits shipped in later work; see v0.2.0 / v0.2.1.)
 
 ### Rollback guidance
 - Redeploy previous tag; migrations through this release are additive.

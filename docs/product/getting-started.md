@@ -31,7 +31,7 @@ Start with the setup checklist on the Admin home page:
 4. Users & invitations (`/admin/users`)
 5. Modules (`/settings/organization`) — disabled modules disappear from navigation
 6. Security center (`/admin/security`) — sessions, MFA adoption
-7. Integrations (`/admin` → Frappe HR sync)
+7. Integrations (`/admin` → email, SSO/SCIM if used)
 
 Every administrative action lands in `/admin/audit`.
 

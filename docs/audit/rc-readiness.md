@@ -1,51 +1,42 @@
-# Wamiro — Release-Candidate Readiness (post R0–R15 program)
+# Wamiro — Release-Candidate Readiness
 
-Status date: end of goal window `goal-b89fc3dc…` (rounds 1–22).
+Status date: Phase 1 identity (enterprise plan §3).
 
-## Closing verification (round 30)
+## Closing verification (Phase 1)
 
 | Gate | Result |
 |---|---|
-| lint | 0 errors (12 style warnings) |
+| lint | 0 errors (pre-existing style warnings) |
 | typecheck | clean |
-| unit tests | 25/25 |
-| cross-tenant integration | PASS (extended suite) |
-| E2E feature journey | **59/59 PASS** on production build |
-| restore drill | PASSED r28 (WAL_LOG clone parity x9 tables) |
-| migrations | 0001-0038 applied |
-## What is certified
+| unit tests | 64/64 (added email-domain + password-policy) |
+| cross-tenant integration | PASS — token single-use, cross-org resend 404, manager line, domain lock, lockout |
+| build | `next build` succeeded |
+| smoke | `/api/v1/health/live` 200, `/ready` 200 |
+| migrations | `0054` applied (invite tokens, lockout, org policies) |
 
-| Area | Evidence |
+## Phase 1 — shipped
+
+| Item | Evidence |
 |---|---|
-| Feature completeness (functional) | `scripts/e2e-all.mjs` **55/55 PASS** on production build — every module's create→decide→consume flow incl. multi-org switch, suspend/reactivate, SLA sweep, workplace booking conflict, AI citations path, security negatives |
-| Tenant isolation | isolation suite green (15 surfaces) + sim leak assertions 0/120 checks across runs |
-| Authorization | precedence contract tests (11) + engine catalog-lock; route/service dual enforcement |
-| Performance evidence | sim N=10→25: search p95 731ms flat; /me p95 ~268ms; indexes via migrations 0034 |
-| Migrations | 0001–0035 applied to live DB, replay-idempotent style |
-| Build/lint/types | verify battery GREEN at close of round 22 |
+| Invitation token links (no password in email) | `invitation_tokens`, `/invite/accept`, `createInvitation` |
+| Legacy temp-password fallback | `inviteUser(..., { legacy: true })` / `?legacy=1` (ponytail, one release) |
+| Self-service password + reset | `/settings/security`, `/forgot-password`, `/reset-password` |
+| Managed password mode | org `password_mode` + admin approve/reject |
+| Account lockout | 10 fails / 15 min → `users.locked_until` 30 min + admin notify |
+| Cascading invites | `team.invite`, manager line only, CSV dry-run + commit |
+| Corporate email lock | `allowed_email_domains` on invite + login |
+| Your sessions | `GET/DELETE /api/v1/me/sessions` |
+| MFA policy | `mfa_mode` optional / required_admins / required_all |
+| Onboarding gate | `onboarding_state`; daily modules interstitial; platform force-complete |
+| Existing orgs | stay `onboarding_state=complete`; new orgs start `pending` |
 
-## Blockers still open before GA (honest list, updated r30)
+## Still open (not Phase 1)
 
-1. ~~Backup restore drill~~ **DONE r28** (WAL_LOG clone verified). Artifact-level pg_dump drill pending PG18 client tools.
-2. **D14 Workplace**: visitors DONE r24; facilities issues + calendar UI remain.
-3. ~~D15 Governance core~~ **DONE r23+controls r29**. Legal matters/contracts remain.
-4. Workflow: parallel branches + automated retry/timeout runner.
-5. AI per-tool scope narrowing for cross-tenant resources.
-6. Per-route mutation rate limits beyond auth endpoints.
-7. Restore `02_WAMIRO_END_TO_END_MASTER_BLUEPRINT_V2.md` into the R&D package (missing doc).
-
-## RC checklist to exit the above
-
-- [x] Restore drill: WAL_LOG clone of live DB verified with row-parity across 9 core tables (`scripts/restore-drill.mjs`) — **PASSED r28**; artifact-level pg_dump drill pending PG18 client tools
-- [ ] D14 visitors/facilities schema+APIs (pattern: copy bookings slice) — visitors DONE r24; facilities issues + calendar UI remain
-- [ ] D15 policies/risks/evidence minimal tables + admin surface
-- [ ] Parallel approval branches in requests review()
-- [ ] Load pass at N=100 tenants on prod-like host
-- [ ] Tag `rc-1.0.0` after all boxes tick
+1. Phase 2 — first-login tour, role checklists, help center.
+2. Phase 3 — Paddle billing.
+3. Phase 4 — R2 storage + RLS.
 
 ## How to resume
 
-Goal tool continues this program; the forensics ledger
-(`docs/audit/R0-forensics.md`) is the single source of truth for status and
-evidence pointers. Suites: `npm run verify`, `node scripts/e2e-all.mjs`,
-`npm run sim -- --tenants N`.
+Suites: `npm run verify`, `node scripts/e2e-all.mjs`.
+Next: Phase 2 in `docs/implementation-plan-enterprise.md`.

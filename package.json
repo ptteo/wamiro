@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/modules/iam/engine.test.ts src/modules/iam/precedence.test.ts src/lib/password.test.ts src/lib/totp.test.ts src/modules/tickets/sla.test.ts src/modules/webhooks/sign.test.ts src/modules/sso/verify.test.ts src/lib/push.test.ts src/modules/org/host.test.ts",
+    "test": "node --import tsx --test src/modules/iam/engine.test.ts src/modules/iam/precedence.test.ts src/lib/password.test.ts src/lib/totp.test.ts src/lib/secrets.test.ts src/modules/tickets/sla.test.ts src/modules/webhooks/sign.test.ts src/modules/sso/verify.test.ts src/lib/push.test.ts src/modules/org/host.test.ts src/modules/payroll/proration.test.ts src/modules/mailboxes/parse.test.ts src/lib/email-domain.test.ts src/lib/password-policy.test.ts",
     "test:integration": "node --import tsx --test src/tests/isolation.test.ts",
     "smoke": "node scripts/smoke-test.mjs",
     "mail:worker": "node --import tsx scripts/worker-mail.mjs",

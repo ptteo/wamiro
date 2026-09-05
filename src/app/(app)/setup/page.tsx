@@ -3,6 +3,7 @@ import { Card, EmptyState } from "@/components/ui";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { setupChecklist } from "@/modules/org/service";
+import { syncOnboardingState } from "@/modules/org/policies";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Company Setup" };
@@ -26,6 +27,7 @@ export default async function SetupPage() {
     );
   }
 
+  await syncOnboardingState(ctx);
   const setup = await setupChecklist(ctx);
   const { SetupWizardClient } = await import("@/components/setup-wizard-client");
 

@@ -11,6 +11,8 @@ import { verifyPassword } from "@/lib/password";
 import { verifyTotp } from "@/lib/totp";
 import { enforceRateLimit } from "@/lib/ratelimit";
 import { SESSION_COOKIE, cookieOptions, createSession } from "@/lib/session";
+import { emailAllowedForDomains } from "@/lib/email-domain";
+import { isLocked, recordFailedLogin } from "@/modules/auth/passwords";
 import { organizations, users } from "@/db/schema";
 
 const bodySchema = z.object({
@@ -43,16 +45,28 @@ export const POST = route(
         authMethod: users.authMethod,
         totpSecret: users.totpSecret,
         totpEnabled: users.totpEnabled,
+        lockedUntil: users.lockedUntil,
+        organizationId: users.organizationId,
         orgStatus: organizations.status,
+        allowedEmailDomains: organizations.allowedEmailDomains,
       })
       .from(users)
       .innerJoin(organizations, eq(organizations.id, users.organizationId))
       .where(eq(users.email, email))
       .limit(1);
 
+    if (row && isLocked(row.lockedUntil)) {
+      throw ApiError.forbidden("This account is locked for 30 minutes after too many failed sign-ins.");
+    }
+
     // constant-ish behavior whether or not the account exists
     const ok = row && (await verifyPassword(parsed.data.password, row.passwordHash));
     if (!ok || !row) {
+      if (row) {
+        await recordFailedLogin(row.id, email, row.organizationId).catch((e) => {
+          if (e instanceof ApiError) throw e;
+        });
+      }
       await audit({
         organizationId: null,
         actorUserId: null,
@@ -63,6 +77,12 @@ export const POST = route(
         userAgent: req.headers.get("user-agent"),
       });
       throw ApiError.unauthorized("Incorrect email or password");
+    }
+    if (row.status === "invited") {
+      throw ApiError.forbidden("Open the invite link we sent to set your password.");
+    }
+    if (!emailAllowedForDomains(email, row.allowedEmailDomains)) {
+      throw ApiError.forbidden("This organization only allows company email addresses.");
     }
     if (row.status === "suspended" || row.orgStatus !== "active") {
       throw ApiError.forbidden("Account or organization suspended");
@@ -106,7 +126,7 @@ export const POST = route(
       ip,
       userAgent: req.headers.get("user-agent"),
     });
-    await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, row.id));
+    await db.update(users).set({ lastLoginAt: new Date(), lockedUntil: null }).where(eq(users.id, row.id));
     await audit({
       organizationId: null, // org resolved inside session; avoid pre-auth tenant claims in audit
       actorUserId: row.id,

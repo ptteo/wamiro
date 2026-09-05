@@ -162,7 +162,7 @@ export async function provisionOrganization(input: ProvisionOrgInput): Promise<{
     const org = first(
       await tx
         .insert(organizations)
-        .values({ name: input.companyName.trim(), slug })
+        .values({ name: input.companyName.trim(), slug, onboardingState: "pending" })
         .returning({ id: organizations.id }),
     );
 

@@ -14,13 +14,38 @@
  * (`ingestMessage`) is fully implemented and unit-tested regardless.
  */
 import { and, desc, eq } from "drizzle-orm";
+import { simpleParser } from "mailparser";
 
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
+import { decryptSecret, encryptSecret, reencrypt } from "@/lib/secrets";
 import type { AuthContext } from "@/lib/session";
 import { mailboxMessages, mailboxes, tickets, users } from "@/db/schema";
 import { can } from "@/modules/iam/engine";
+
+const MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
+
+function sealImapPass(raw: string): string {
+  try {
+    return encryptSecret(raw.slice(0, 500));
+  } catch {
+    throw ApiError.badRequest("SECRET_KEY is required to store mailbox passwords. See .env.example.");
+  }
+}
+
+/** Prefer plaintext; fall back to stripped HTML so HTML-only mail is not dropped. */
+export function textFromParsed(parsed: { text?: string | false; html?: string | false }): string {
+  if (typeof parsed.text === "string" && parsed.text.trim()) return parsed.text.trim();
+  if (typeof parsed.html === "string" && parsed.html.trim()) {
+    return parsed.html
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return "";
+}
 
 function requireAgent(ctx: AuthContext) {
   if (!can(ctx.access, "tickets.manage")) throw ApiError.forbidden("Missing permission: tickets.manage");
@@ -78,7 +103,7 @@ export async function connectMailbox(
       imapHost: input.imapHost.trim().slice(0, 200),
       imapPort: Math.min(Math.max(Math.round(input.imapPort), 1), 65535),
       imapUser: input.imapUser.trim().slice(0, 200),
-      imapPass: input.imapPass.slice(0, 500),
+      imapPass: sealImapPass(input.imapPass),
       useSsl: input.useSsl !== false,
     })
     .returning({ id: mailboxes.id });
@@ -112,7 +137,7 @@ export async function updateMailbox(
   if (input.imapHost !== undefined) patch.imapHost = input.imapHost.trim().slice(0, 200);
   if (input.imapPort !== undefined) patch.imapPort = Math.min(Math.max(Math.round(input.imapPort), 1), 65535);
   if (input.imapUser !== undefined) patch.imapUser = input.imapUser.trim().slice(0, 200);
-  if (input.imapPass !== undefined && input.imapPass !== "") patch.imapPass = input.imapPass.slice(0, 500);
+  if (input.imapPass !== undefined && input.imapPass !== "") patch.imapPass = sealImapPass(input.imapPass);
   if (input.useSsl !== undefined) patch.useSsl = input.useSsl;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   const updated = await db
@@ -227,7 +252,7 @@ export async function pollMailbox(mailboxId: string): Promise<{ fetched: number;
     host: box.imapHost,
     port: box.imapPort,
     secure: box.useSsl,
-    auth: { user: box.imapUser, pass: box.imapPass },
+    auth: { user: box.imapUser, pass: decryptSecret(box.imapPass) },
     logger: false,
   });
 
@@ -236,17 +261,31 @@ export async function pollMailbox(mailboxId: string): Promise<{ fetched: number;
     await client.connect();
     const lock = await client.getMailboxLock("INBOX");
     try {
-      for await (const msg of client.fetch("1:*", { envelope: true, bodyParts: ["1"], uid: true }, { uid: true })) {
+      for await (const msg of client.fetch("1:*", { envelope: true, source: true, uid: true }, { uid: true })) {
         if (msg.seen) continue;
-        const subject = (msg.envelope?.subject as string | undefined) ?? "";
-        const from = (msg.envelope?.from?.[0]?.address as string | undefined) ?? "";
-        const text = msg.bodyParts?.get("1")?.toString() ?? "";
+        const subject = (typeof msg.envelope?.subject === "string" ? msg.envelope.subject : msg.envelope?.subject?.[0]) ?? "";
+        const from = msg.envelope?.from?.[0]?.address ?? "";
+        let text = "";
+        const attachments: InboundMessage["attachments"] = [];
+        const source = msg.source;
+        if (source && source.length <= MAX_RAW_MESSAGE_BYTES) {
+          const parsed = await simpleParser(source);
+          text = textFromParsed(parsed);
+          for (const a of (parsed.attachments ?? []).slice(0, 5)) {
+            if (!a.content || a.content.length === 0) continue;
+            attachments.push({
+              name: (a.filename || "attachment").slice(0, 300),
+              mimeType: (a.contentType || "application/octet-stream").slice(0, 120),
+              data: a.content,
+            });
+          }
+        }
         const result = await ingestMessage(box.organizationId, {
           messageId: `${box.id}:${msg.uid}`,
           from,
           subject,
           text,
-          attachments: [],
+          attachments,
         });
         counts.fetched++;
         if (result.action === "created") counts.created++;
@@ -257,7 +296,19 @@ export async function pollMailbox(mailboxId: string): Promise<{ fetched: number;
     } finally {
       lock.release();
     }
-    await db.update(mailboxes).set({ lastSyncAt: new Date(), lastError: null }).where(eq(mailboxes.id, mailboxId));
+    const patch: { lastSyncAt: Date; lastError: null; imapPass?: string } = {
+      lastSyncAt: new Date(),
+      lastError: null,
+    };
+    // Lazy upgrade: rewrite leftover plaintext passwords after a good poll.
+    if (box.imapPass && !box.imapPass.startsWith("v1:")) {
+      try {
+        patch.imapPass = reencrypt(box.imapPass);
+      } catch {
+        /* keep plaintext until SECRET_KEY is set — poll already succeeded */
+      }
+    }
+    await db.update(mailboxes).set(patch).where(eq(mailboxes.id, mailboxId));
   } catch (e) {
     await db
       .update(mailboxes)

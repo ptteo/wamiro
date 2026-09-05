@@ -27,6 +27,7 @@ export interface SessionUser {
   name: string;
   status: "invited" | "active" | "suspended";
   organizationId: string;
+  totpEnabled: boolean;
 }
 
 export interface SessionOrg {
@@ -42,6 +43,8 @@ export interface SessionOrg {
   billingStatus: string;
   trialEndsAt: Date | null;
   seatLimit: number | null;
+  onboardingState: string;
+  mfaMode: string;
 }
 
 export interface AuthContext {
@@ -146,6 +149,7 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
         email: users.email,
         name: users.name,
         status: users.status,
+        totpEnabled: users.totpEnabled,
         organizationId: sql<string>`COALESCE(${sessions.activeOrganizationId}, ${users.organizationId})`,
       },
       org: {
@@ -161,6 +165,8 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
         billingStatus: organizations.billingStatus,
         trialEndsAt: organizations.trialEndsAt,
         seatLimit: organizations.seatLimit,
+        onboardingState: organizations.onboardingState,
+        mfaMode: organizations.mfaMode,
       },
     })
     .from(sessions)
@@ -180,6 +186,9 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
   if (!row) throw ApiError.unauthorized("Session expired or invalid");
   if (row.user.status === "suspended") {
     throw ApiError.forbidden("This account is suspended");
+  }
+  if (row.user.status === "invited") {
+    throw ApiError.forbidden("Finish the invite link to activate this account");
   }
   if (row.org.status !== "active") {
     throw ApiError.forbidden("This organization is suspended");

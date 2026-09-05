@@ -545,32 +545,62 @@ const ESCALATION_PRIORITY_HOURS: Record<string, number> = {
  */
 export async function platformSupportQueue(ctx: AuthContext) {
   requirePlatform(ctx);
-  const rows = await db
-    .select({
-      id: tickets.id,
-      organizationId: tickets.organizationId,
-      orgName: organizations.name,
-      title: tickets.title,
-      status: tickets.status,
-      priority: tickets.priority,
-      slaState: tickets.slaState,
-      slaDueDate: tickets.slaDueDate,
-      escalatedAt: tickets.escalatedAt,
-      createdAt: tickets.createdAt,
-      requesterName: users.name,
-    })
-    .from(tickets)
-    .innerJoin(organizations, eq(organizations.id, tickets.organizationId))
-    .innerJoin(users, eq(users.id, tickets.requesterId))
-    .where(
-      and(
-        eq(tickets.category, "platform"),
-        sql`${tickets.status} NOT IN ('resolved', 'closed')`,
-      ),
-    )
-    .orderBy(sql`${tickets.escalatedAt} DESC NULLS LAST`, asc(tickets.slaDueDate))
-    .limit(200);
-  return rows;
+  const PAGE = 200;
+  const MAX = 1000;
+  const collected: {
+    id: string;
+    organizationId: string;
+    orgName: string;
+    title: string;
+    status: string;
+    priority: string;
+    slaState: string;
+    slaDueDate: Date | null;
+    escalatedAt: Date | null;
+    createdAt: Date;
+    requesterName: string;
+  }[] = [];
+  let afterId: string | undefined;
+  while (collected.length < MAX) {
+    const batch = await db
+      .select({
+        id: tickets.id,
+        organizationId: tickets.organizationId,
+        orgName: organizations.name,
+        title: tickets.title,
+        status: tickets.status,
+        priority: tickets.priority,
+        slaState: tickets.slaState,
+        slaDueDate: tickets.slaDueDate,
+        escalatedAt: tickets.escalatedAt,
+        createdAt: tickets.createdAt,
+        requesterName: users.name,
+      })
+      .from(tickets)
+      .innerJoin(organizations, eq(organizations.id, tickets.organizationId))
+      .innerJoin(users, eq(users.id, tickets.requesterId))
+      .where(
+        and(
+          eq(tickets.category, "platform"),
+          sql`${tickets.status} NOT IN ('resolved', 'closed')`,
+          afterId ? gt(tickets.id, afterId) : undefined,
+        ),
+      )
+      .orderBy(asc(tickets.id))
+      .limit(Math.min(PAGE, MAX - collected.length));
+    if (batch.length === 0) break;
+    collected.push(...batch);
+    afterId = batch[batch.length - 1]!.id;
+  }
+  collected.sort((a, b) => {
+    if (a.escalatedAt && b.escalatedAt) return b.escalatedAt.getTime() - a.escalatedAt.getTime();
+    if (a.escalatedAt) return -1;
+    if (b.escalatedAt) return 1;
+    const ad = a.slaDueDate?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bd = b.slaDueDate?.getTime() ?? Number.POSITIVE_INFINITY;
+    return ad - bd;
+  });
+  return collected;
 }
 
 /**

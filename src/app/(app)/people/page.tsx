@@ -67,7 +67,10 @@ export default async function PeoplePage({
   return (
     <Content width="wide">
       <PageHeader title="People" subtitle={subtitle}>
-        <PeopleDirectoryHeaderAction canInvite={can(ctx.access, "users.manage")} />
+        <PeopleDirectoryHeaderAction
+          canInvite={can(ctx.access, "users.manage") || can(ctx.access, "team.invite")}
+          teamOnly={!can(ctx.access, "users.manage")}
+        />
       </PageHeader>
 
       <PeopleDirectory

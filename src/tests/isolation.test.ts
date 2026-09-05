@@ -1116,6 +1116,7 @@ test(
         email: `fit-${suffix}@iso.test`,
         roleKey: "employee",
       });
+      userIds.push(overInvite.userId);
       assert.ok(overInvite.userId, "invite works once capacity allows");
 
       // Lifecycle: one tenant's billing state never leaks into another's view.
@@ -1238,7 +1239,119 @@ test(
       );
       await db.delete(schema.rateLimitHits).where(eq(schema.rateLimitHits.key, rlKey));
 
-      console.log("isolation suite passed: directory/attendance/leave/search/admin/overrides/requests/documents/knowledge/analytics/work/admin-detail/admin-sessions/admin-audit/tickets/announcements/attachments/catalog/it-records/groups/mailboxes/shifts/corrections/encashment/hr-documents/holidays/payroll/advances/analytics-reports/billing/domains/push/ratelimit all tenant-scoped");
+      // ------------------------------------------------------------------
+      // Phase 1: invitation tokens, domain lock, manager scope, lockout
+      // ------------------------------------------------------------------
+      const inviteSvc = await import("@/modules/invitations/service");
+      const pwSvc = await import("@/modules/auth/passwords");
+
+      const tokenInvite = await inviteSvc.createInvitation(ctxAdminA, {
+        name: "Token Join",
+        email: `token-${suffix}@iso.test`,
+        roleKey: "employee",
+      });
+      userIds.push(tokenInvite.userId);
+      assert.ok(tokenInvite.inviteUrl, "new invites return a link, not a password");
+      const rawToken = new URL(tokenInvite.inviteUrl!, "http://localhost").searchParams.get("token");
+      assert.ok(rawToken);
+      const peeked = await inviteSvc.peekInvitation(rawToken!);
+      assert.equal(peeked.email, `token-${suffix}@iso.test`);
+      await inviteSvc.acceptInvitation(rawToken!, { password: "Iso-Accept-99" });
+      await assert.rejects(
+        () => inviteSvc.acceptInvitation(rawToken!, { password: "Iso-Accept-99" }),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "invite token is single-use",
+      );
+      await assert.rejects(
+        () => inviteSvc.peekInvitation("not-a-real-token"),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "unknown token is not found",
+      );
+      await assert.rejects(
+        () => inviteSvc.resendInvitation(ctxAdminB, tokenInvite.inviteId),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "cross-org cannot resend another tenant's invite",
+      );
+
+      await assert.rejects(
+        () =>
+          inviteSvc.createInvitation(ctxMgrA, {
+            name: "Priv",
+            email: `priv-${suffix}@iso.test`,
+            roleKey: "admin",
+          }),
+        /Managers can only invite|Missing permission/i,
+        "manager cannot invite privileged roles",
+      );
+      await assert.rejects(
+        () =>
+          inviteSvc.createInvitation(ctxMgrA, {
+            name: "Outside",
+            email: `out-${suffix}@iso.test`,
+            roleKey: "employee",
+            managerUserId: A.adminId,
+          }),
+        /report to you/i,
+        "manager cannot invite onto someone else's line",
+      );
+      const teamInvite = await inviteSvc.createInvitation(ctxMgrA, {
+        name: "Report",
+        email: `report-${suffix}@iso.test`,
+        roleKey: "employee",
+      });
+      userIds.push(teamInvite.userId);
+      const [empRow] = await db
+        .select({ managerUserId: schema.employees.managerUserId })
+        .from(schema.employees)
+        .where(eq(schema.employees.userId, teamInvite.userId));
+      assert.equal(empRow?.managerUserId, A.managerId, "team invite reports to the inviting manager");
+
+      await db
+        .update(schema.organizations)
+        .set({ allowedEmailDomains: ["howdy.com"] })
+        .where(eq(schema.organizations.id, A.orgId));
+      await assert.rejects(
+        () =>
+          inviteSvc.createInvitation(ctxAdminA, {
+            name: "Wrong Domain",
+            email: `wrong-${suffix}@iso.test`,
+            roleKey: "employee",
+          }),
+        /email domains/i,
+        "domain lock rejects off-domain invites",
+      );
+      await db
+        .update(schema.organizations)
+        .set({ allowedEmailDomains: [] })
+        .where(eq(schema.organizations.id, A.orgId));
+
+      const lockEmail = `lock-${suffix}@iso.test`;
+      const [lockUser] = await db
+        .insert(schema.users)
+        .values({
+          organizationId: A.orgId,
+          email: lockEmail,
+          name: "Lock Me",
+          passwordHash,
+          status: "active",
+        })
+        .returning({ id: schema.users.id });
+      userIds.push(lockUser!.id);
+      for (let i = 0; i < 10; i++) {
+        await pwSvc.recordFailedLogin(lockUser!.id, lockEmail, A.orgId);
+      }
+      await assert.rejects(
+        () => pwSvc.recordFailedLogin(lockUser!.id, lockEmail, A.orgId),
+        /locked/i,
+        "11th failed login locks the account",
+      );
+      const [locked] = await db
+        .select({ lockedUntil: schema.users.lockedUntil })
+        .from(schema.users)
+        .where(eq(schema.users.id, lockUser!.id));
+      assert.ok(pwSvc.isLocked(locked?.lockedUntil), "lockedUntil is set after the burst");
+
+      console.log("isolation suite passed: directory/attendance/leave/search/admin/overrides/requests/documents/knowledge/analytics/work/admin-detail/admin-sessions/admin-audit/tickets/announcements/attachments/catalog/it-records/groups/mailboxes/shifts/corrections/encashment/hr-documents/holidays/payroll/advances/analytics-reports/billing/domains/push/ratelimit/invites/lockout all tenant-scoped");
     } finally {
       // cleanup test tenants (users first — FK default is restrict)
       if (userIds.length) {

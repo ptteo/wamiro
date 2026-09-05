@@ -115,15 +115,21 @@ export function SetupWizardClient({
       const body = (await res.json()) as {
         error?: { message?: string };
         tempPassword?: string;
+        inviteUrl?: string;
+        linked?: boolean;
       };
       if (!res.ok) {
         setError(body.error?.message ?? "Could not send the invite");
         return;
       }
       setMessage(
-        body.tempPassword
-          ? `Invited! Share the temporary password with ${String(f.get("name"))}: ${body.tempPassword}`
-          : "Invite sent! They'll receive an email with sign-in instructions.",
+        body.linked
+          ? "They already have a Wamiro account — they can sign in to this company."
+          : body.inviteUrl
+            ? `Invite link (copy if email is off): ${body.inviteUrl}`
+            : body.tempPassword
+              ? `Invited! Temporary password: ${body.tempPassword}`
+              : "Invite sent. They will get a link to set their own password.",
       );
       (e.target as HTMLFormElement).reset();
       router.refresh();

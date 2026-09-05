@@ -26,6 +26,7 @@ declare module "imapflow" {
       from?: { address?: string }[];
     };
     bodyParts?: Map<string, Buffer>;
+    source?: Buffer;
   }
 
   export class ImapFlow {

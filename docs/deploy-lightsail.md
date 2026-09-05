@@ -29,7 +29,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 sudo mkdir -p /opt/wamiro && sudo chown ubuntu:ubuntu /opt/wamiro
 # copy the repo to /opt/wamiro (git clone or rsync)
 cd /opt/wamiro
-cp .env.example .env && vi .env    # set DATABASE_URL, APP_URL
+cp .env.example .env && vi .env    # set DATABASE_URL, APP_URL, SECRET_KEY
 npm ci
 npm run build
 npm run db:generate                 # once, to emit migrations from schema
@@ -50,7 +50,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/opt/wamiro
 EnvironmentFile=/opt/wamiro/.env
-ExecStart=/usr/bin/npm run start
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
@@ -67,11 +67,29 @@ sudo systemctl enable --now wamiro
 
 ## 5. Caddy reverse proxy (automatic HTTPS)
 
+Login and API rate limits trust the first `X-Forwarded-For` hop. That is only
+safe if **Caddy is the only process that can reach port 3000**. The systemd
+unit binds Next to `127.0.0.1`. Also firewall the public interface:
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw deny 3000
+sudo ufw --force enable
+```
+
 `/etc/caddy/Caddyfile`:
 
 ```
+{
+    servers {
+        trusted_proxies static 127.0.0.1/32
+    }
+}
+
 your-domain.com {
-    reverse_proxy localhost:3000
+    reverse_proxy 127.0.0.1:3000
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
         X-Frame-Options DENY

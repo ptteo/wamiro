@@ -13,6 +13,7 @@
  * No external dependency — only Node's built-in `crypto`.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { hostname, userInfo } from "node:os";
 
 const VERSION = "v1";
 const IV_BYTES = 12;
@@ -29,10 +30,8 @@ function getKey(): Buffer {
   }
   // Dev fallback: derive a stable key from machine id so restarts can
   // still decrypt. NOT for production.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const os = require("node:os") as typeof import("node:os");
   return createHash("sha256")
-    .update(`${os.hostname()}|${os.userInfo().username}|wamiro-dev-fallback`, "utf8")
+    .update(`${hostname()}|${userInfo().username}|wamiro-dev-fallback`, "utf8")
     .digest();
 }
 

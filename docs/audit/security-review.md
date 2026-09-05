@@ -26,6 +26,6 @@ and how it is verified. "Gap" rows are tracked in R0-forensics.
 ## Gaps (tracked)
 
 1. Upload guards lack an automated negative E2E case (oversized/blocked-type) — add to e2e-all.
-2. Horizontal rate limits on non-auth mutations rely on same-origin + authz only.
-3. Backup restore drill still unperformed (blocks DR claim — D11 carry-over).
+2. Per-route mutation rate limits beyond the shared org window — tighten before 100-company load.
+3. Artifact-level `pg_dump` restore drill pending PG18 client tools (WAL_LOG clone drill already passed).
 4. Per-tool scope narrowing for AI resources (R10 remainder).

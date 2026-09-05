@@ -131,6 +131,13 @@ export function AuthForm({ mode }: { mode: Mode }) {
               autoComplete={mode === "register" ? "new-password" : "current-password"}
             />
           </Field>
+          {mode === "login" && !mfa ? (
+            <p className="text-right text-sm">
+              <a href="/forgot-password" className="text-[var(--color-brand-600)] hover:underline">
+                Forgot password?
+              </a>
+            </p>
+          ) : null}
           {mode === "register" && (
             <p className="text-xs text-[var(--color-muted)]">
               Minimum 10 characters. You become this workspace&apos;s first administrator.
