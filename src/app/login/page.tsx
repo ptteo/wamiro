@@ -9,7 +9,11 @@ import { isSsoAvailable } from "@/modules/sso/service";
 
 export const metadata = { title: "Sign in" };
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
   const token = await readSessionToken();
   if (token) redirect("/home");
 
@@ -60,7 +64,7 @@ export default async function LoginPage() {
               </div>
             </>
           ) : null}
-          <AuthForm mode="login" />
+          <AuthForm mode="login" initialError={(await searchParams).error ?? null} />
         </div>
         {!tenant ? (
           <p className="mt-4 text-center text-sm text-[var(--color-muted)]">

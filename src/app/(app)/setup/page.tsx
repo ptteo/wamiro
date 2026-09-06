@@ -2,8 +2,10 @@ import { PageHeader } from "@/components/page-header";
 import { Card, EmptyState } from "@/components/ui";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
+import { DemoSampleCard } from "@/components/demo-sample-card";
 import { setupChecklist } from "@/modules/org/service";
 import { syncOnboardingState } from "@/modules/org/policies";
+import { demoStatus } from "@/modules/onboarding/demo";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Company Setup" };
@@ -29,6 +31,8 @@ export default async function SetupPage() {
 
   await syncOnboardingState(ctx);
   const setup = await setupChecklist(ctx);
+  const demo = await demoStatus(ctx);
+  const wizardSteps = setup.steps.filter((s) => s.key !== "kb");
   const { SetupWizardClient } = await import("@/components/setup-wizard-client");
 
   return (
@@ -45,12 +49,13 @@ export default async function SetupPage() {
           canBrand,
           canInvite,
           canAnnounce,
-          steps: setup.steps.map((s) => ({ key: s.key, label: s.label, done: s.done })),
-          done: setup.done,
-          total: setup.total,
+          steps: wizardSteps.map((s) => ({ key: s.key, label: s.label, done: s.done })),
+          done: wizardSteps.filter((s) => s.done).length,
+          total: wizardSteps.length,
           plan: ctx.org.plan,
         }}
       />
+      {canBrand || canInvite ? <DemoSampleCard loaded={demo.loaded} /> : null}
     </div>
   );
 }

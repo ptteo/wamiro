@@ -17,6 +17,12 @@ import {
   users,
 } from "@/db/schema";
 import { can, widestScope } from "@/modules/iam/engine";
+import {
+  LEAVE_QUEUE_STATUSES,
+  approverMayForceCancel,
+  employeeMayRequestCancel,
+  employeeMayWithdraw,
+} from "@/modules/leave/cancel";
 
 const YEAR = new Date().getFullYear();
 
@@ -270,6 +276,7 @@ export async function pendingForApprover(ctx: AuthContext) {
       endDate: leaveRequests.endDate,
       days: leaveRequests.days,
       reason: leaveRequests.reason,
+      status: leaveRequests.status,
       createdAt: leaveRequests.createdAt,
     })
     .from(leaveRequests)
@@ -279,15 +286,18 @@ export async function pendingForApprover(ctx: AuthContext) {
     .leftJoin(departments, eq(departments.id, employees.departmentId))
     .where(
       companyWide
-        ? and(eq(leaveRequests.organizationId, orgId), eq(leaveRequests.status, "pending"))
+        ? and(eq(leaveRequests.organizationId, orgId), inArray(leaveRequests.status, [...LEAVE_QUEUE_STATUSES]))
         : and(
             eq(leaveRequests.organizationId, orgId),
-            eq(leaveRequests.status, "pending"),
+            inArray(leaveRequests.status, [...LEAVE_QUEUE_STATUSES]),
             sql`${leaveRequests.userId} IN (SELECT user_id FROM employees WHERE manager_user_id = ANY(${`{${actorIds.join(",")}}`}::uuid[]))`,
           ),
     )
     .orderBy(leaveRequests.startDate);
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    kind: r.status === "cancel_requested" ? ("cancel" as const) : ("apply" as const),
+  }));
 }
 
 /** Decisions already made by this reviewer, newest first. */
@@ -360,28 +370,15 @@ export async function review(
     .where(and(eq(leaveRequests.id, requestId), eq(leaveRequests.organizationId, orgId)))
     .limit(1);
   if (!req) throw ApiError.notFound();
-  if (req.status !== "pending") throw ApiError.conflict("Already reviewed");
-
-  const companyWide = scope === "COMPANY" || scope === "GLOBAL";
-
-  // Self-approval only for company-level approvers (HR/CEO), never managers on their own requests.
-  if (req.userId === ctx.user.id && !companyWide) {
-    throw ApiError.forbidden("You cannot approve your own request");
+  if (req.status !== "pending" && req.status !== "cancel_requested") {
+    throw ApiError.conflict("Already reviewed");
   }
 
-  // TEAM/DEPARTMENT-scope approvers may act only on direct reports —
-  // or on reports of anyone who delegated their approval authority to us (§27).
-  if (!companyWide) {
-    const actorIds = [ctx.user.id, ...(await resolveApprovalActors(ctx))];
-    const managerFilter = actorIds.length > 1
-      ? or(eq(employees.managerUserId, ctx.user.id), inArray(employees.managerUserId, actorIds))
-      : eq(employees.managerUserId, ctx.user.id);
-    const [report] = await db
-      .select({ userId: employees.userId })
-      .from(employees)
-      .where(and(eq(employees.userId, req.userId), managerFilter))
-      .limit(1);
-    if (!report) throw ApiError.forbidden("Not your direct report");
+  const companyWide = scope === "COMPANY" || scope === "GLOBAL";
+  await assertCanActOnLeave(ctx, req.userId, companyWide);
+
+  if (req.status === "cancel_requested") {
+    return decideCancelRequest(ctx, orgId, requestId, req.userId, decision, note);
   }
 
   const [updated] = await db
@@ -444,6 +441,241 @@ export async function review(
           ? `Your leave was approved by ${ctx.user.name}`
           : `Your leave was rejected by ${ctx.user.name}`,
       body: note ?? null,
+      link: "/leave",
+    });
+  }
+  return updated;
+}
+
+async function assertCanActOnLeave(ctx: AuthContext, targetUserId: string, companyWide: boolean) {
+  if (targetUserId === ctx.user.id && !companyWide) {
+    throw ApiError.forbidden("You cannot approve your own request");
+  }
+  if (companyWide) return;
+  const actorIds = [ctx.user.id, ...(await resolveApprovalActors(ctx))];
+  const managerFilter =
+    actorIds.length > 1
+      ? or(eq(employees.managerUserId, ctx.user.id), inArray(employees.managerUserId, actorIds))
+      : eq(employees.managerUserId, ctx.user.id);
+  const [report] = await db
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(and(eq(employees.userId, targetUserId), managerFilter))
+    .limit(1);
+  if (!report) throw ApiError.forbidden("Not your direct report");
+}
+
+async function restoreUsedDays(orgId: string, userId: string, leaveTypeId: string, days: string | number) {
+  await db
+    .update(leaveBalances)
+    .set({ usedDays: sql`GREATEST(0, ${leaveBalances.usedDays} - ${Number(days)}::numeric)` })
+    .where(
+      and(
+        eq(leaveBalances.organizationId, orgId),
+        eq(leaveBalances.userId, userId),
+        eq(leaveBalances.leaveTypeId, leaveTypeId),
+        eq(leaveBalances.year, YEAR),
+      ),
+    );
+}
+
+async function markCancelled(
+  orgId: string,
+  requestId: string,
+  actorId: string,
+  fromStatus: "pending" | "approved" | "cancel_requested",
+  note: string | null,
+) {
+  const [updated] = await db
+    .update(leaveRequests)
+    .set({
+      status: "cancelled",
+      reviewedBy: actorId,
+      reviewedAt: new Date(),
+      reviewNote: note,
+    })
+    .where(and(eq(leaveRequests.id, requestId), eq(leaveRequests.status, fromStatus)))
+    .returning({
+      id: leaveRequests.id,
+      userId: leaveRequests.userId,
+      days: leaveRequests.days,
+      leaveTypeId: leaveRequests.leaveTypeId,
+    });
+  return updated ?? null;
+}
+
+async function decideCancelRequest(
+  ctx: AuthContext,
+  orgId: string,
+  requestId: string,
+  userId: string,
+  decision: "approved" | "rejected",
+  note?: string,
+) {
+  if (decision === "rejected") {
+    const [kept] = await db
+      .update(leaveRequests)
+      .set({
+        status: "approved",
+        reviewedBy: ctx.user.id,
+        reviewedAt: new Date(),
+        reviewNote: note ?? null,
+      })
+      .where(and(eq(leaveRequests.id, requestId), eq(leaveRequests.status, "cancel_requested")))
+      .returning({ id: leaveRequests.id, userId: leaveRequests.userId });
+    await audit({
+      organizationId: orgId,
+      actorUserId: ctx.user.id,
+      action: "LEAVE_CANCEL_REJECTED",
+      entityType: "leave_request",
+      entityId: requestId,
+      metadata: { note },
+    });
+    if (kept) {
+      await notify({
+        organizationId: orgId,
+        userId: kept.userId,
+        type: "leave.rejected",
+        title: `${ctx.user.name} kept your approved leave`,
+        body: note ?? "Your cancellation request was declined.",
+        link: "/leave",
+      });
+    }
+    return kept;
+  }
+
+  const updated = await markCancelled(orgId, requestId, ctx.user.id, "cancel_requested", note ?? null);
+  if (updated) await restoreUsedDays(orgId, updated.userId, updated.leaveTypeId, updated.days);
+  await audit({
+    organizationId: orgId,
+    actorUserId: ctx.user.id,
+    action: "LEAVE_CANCEL_APPROVED",
+    entityType: "leave_request",
+    entityId: requestId,
+    metadata: { note },
+  });
+  await emit(orgId, "leave.cancelled", "leave_request", requestId, ctx.user.id);
+  if (updated) {
+    await notify({
+      organizationId: orgId,
+      userId: updated.userId,
+      type: "leave.approved",
+      title: `${ctx.user.name} cancelled your leave`,
+      body: note ?? "Your cancellation was approved. Those days are back in your balance.",
+      link: "/leave",
+    });
+  }
+  return updated;
+}
+
+export async function cancelLeave(
+  ctx: AuthContext,
+  requestId: string,
+  opts: { note?: string; force?: boolean } = {},
+) {
+  const orgId = ctx.user.organizationId;
+  const [req] = await db
+    .select({
+      id: leaveRequests.id,
+      userId: leaveRequests.userId,
+      status: leaveRequests.status,
+      endDate: leaveRequests.endDate,
+      days: leaveRequests.days,
+      leaveTypeId: leaveRequests.leaveTypeId,
+    })
+    .from(leaveRequests)
+    .where(and(eq(leaveRequests.id, requestId), eq(leaveRequests.organizationId, orgId)))
+    .limit(1);
+  if (!req) throw ApiError.notFound();
+
+  if (opts.force) {
+    if (!can(ctx.access, "leave.approve")) throw ApiError.forbidden("Missing permission: leave.approve");
+    const note = opts.note?.trim() ?? "";
+    if (note.length < 2) throw ApiError.badRequest("A note is required to cancel someone else's leave");
+    if (!approverMayForceCancel(req.status)) {
+      throw ApiError.conflict("Only approved leave can be cancelled by an approver");
+    }
+    const scope = widestScope(ctx.access, "leave.approve");
+    const companyWide = scope === "COMPANY" || scope === "GLOBAL";
+    await assertCanActOnLeave(ctx, req.userId, companyWide);
+    const from = req.status === "cancel_requested" ? "cancel_requested" : "approved";
+    const updated = await markCancelled(orgId, requestId, ctx.user.id, from, note);
+    if (updated) await restoreUsedDays(orgId, updated.userId, updated.leaveTypeId, updated.days);
+    await audit({
+      organizationId: orgId,
+      actorUserId: ctx.user.id,
+      action: "LEAVE_FORCE_CANCELLED",
+      entityType: "leave_request",
+      entityId: requestId,
+      metadata: { note },
+    });
+    await emit(orgId, "leave.cancelled", "leave_request", requestId, ctx.user.id);
+    if (updated && updated.userId !== ctx.user.id) {
+      await notify({
+        organizationId: orgId,
+        userId: updated.userId,
+        type: "leave.rejected",
+        title: `${ctx.user.name} cancelled your leave`,
+        body: note,
+        link: "/leave",
+      });
+    }
+    return updated;
+  }
+
+  if (req.userId !== ctx.user.id) throw ApiError.forbidden("You can only cancel your own leave");
+  if (!can(ctx.access, "leave.apply")) throw ApiError.forbidden("Missing permission: leave.apply");
+
+  if (employeeMayWithdraw(req.status)) {
+    const updated = await markCancelled(orgId, requestId, ctx.user.id, "pending", opts.note ?? null);
+    await audit({
+      organizationId: orgId,
+      actorUserId: ctx.user.id,
+      action: "LEAVE_WITHDRAWN",
+      entityType: "leave_request",
+      entityId: requestId,
+    });
+    await emit(orgId, "leave.cancelled", "leave_request", requestId, ctx.user.id);
+    return updated;
+  }
+
+  if (!employeeMayRequestCancel(req.status, String(req.endDate))) {
+    if (req.status === "approved") throw ApiError.conflict("This leave has already ended");
+    throw ApiError.conflict("This leave cannot be cancelled");
+  }
+
+  const [updated] = await db
+    .update(leaveRequests)
+    .set({
+      status: "cancel_requested",
+      reviewNote: opts.note?.trim() || null,
+    })
+    .where(and(eq(leaveRequests.id, requestId), eq(leaveRequests.status, "approved")))
+    .returning({ id: leaveRequests.id });
+  if (!updated) throw ApiError.conflict("This leave cannot be cancelled");
+
+  await audit({
+    organizationId: orgId,
+    actorUserId: ctx.user.id,
+    action: "LEAVE_CANCEL_REQUESTED",
+    entityType: "leave_request",
+    entityId: requestId,
+    metadata: { note: opts.note },
+  });
+  await emit(orgId, "leave.cancel_requested", "leave_request", requestId, ctx.user.id);
+
+  const [mgr] = await db
+    .select({ managerUserId: employees.managerUserId })
+    .from(employees)
+    .where(and(eq(employees.userId, ctx.user.id), eq(employees.organizationId, orgId)))
+    .limit(1);
+  if (mgr?.managerUserId) {
+    await notify({
+      organizationId: orgId,
+      userId: mgr.managerUserId,
+      type: "leave.requested",
+      title: `${ctx.user.name} asked to cancel leave`,
+      body: opts.note?.trim() || "They no longer need the approved time off.",
       link: "/leave",
     });
   }

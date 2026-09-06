@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 
 import { AppGates } from "@/components/app-gates";
+import { TourMount } from "@/components/tour-mount";
 import { ImpersonationBanner } from "@/components/impersonation-banner";
 import { LogoutButton } from "@/components/logout-button";
 import {
@@ -149,7 +150,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
       {/* sidebar — single source of navigation on desktop */}
       <div className="flex h-full">
-        <aside className="hidden w-72 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
+        <aside className="relative z-[90] hidden w-72 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
           <WorkspaceSidebar
             workspaces={shellWorkspaces}
             paletteNav={paletteNav}
@@ -169,7 +170,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {/* content */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* mobile top bar: org brand + active workspace + menu disclosure */}
-          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-surface px-4 py-3 md:hidden">
+          <header className="relative z-[90] flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-surface px-4 py-3 md:hidden">
             <span className="flex min-w-0 items-center gap-2">
               <span
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white"
@@ -204,6 +205,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             >
               {children}
             </AppGates>
+            <TourMount />
           </main>
         </div>
       </div>

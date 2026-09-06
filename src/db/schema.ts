@@ -48,6 +48,7 @@ export const leaveStatusEnum = pgEnum("leave_status", [
   "approved",
   "rejected",
   "cancelled",
+  "cancel_requested",
 ]);
 export const attendanceCorrectionStatusEnum = pgEnum("attendance_correction_status", [
   "pending",
@@ -1095,6 +1096,8 @@ export const projects = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /** Phase 2 — sample rows seeded during onboarding; safe to purge. */
+    demo: boolean("demo").notNull().default(false),
   },
   (t) => [index("projects_org_idx").on(t.organizationId, t.status)],
 );
@@ -1628,6 +1631,8 @@ export const tickets = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /** Phase 2 — sample rows seeded during onboarding; safe to purge. */
+    demo: boolean("demo").notNull().default(false),
   },
   (t) => [
     index("tickets_org_status_idx").on(t.organizationId, t.status),

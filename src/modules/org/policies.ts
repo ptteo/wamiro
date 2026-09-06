@@ -86,13 +86,17 @@ export async function syncOnboardingState(ctx: AuthContext): Promise<string> {
   if (current === "complete") return current;
   const setup = await setupChecklist(ctx);
   let next = current;
-  if (setup.steps.find((s) => s.key === "brand")?.done) {
+  const brand = setup.steps.find((s) => s.key === "brand")?.done;
+  const team = setup.steps.find((s) => s.key === "team")?.done;
+  const announce = setup.steps.find((s) => s.key === "announce")?.done;
+  if (brand) {
     if (next === "pending") next = "admin_done";
   }
-  if (setup.steps.find((s) => s.key === "team")?.done) {
+  if (team) {
     if (next === "pending" || next === "admin_done") next = "employees_seeded";
   }
-  if (setup.done === setup.total) next = "complete";
+  // Wizard is brand + team + announce. KB stays a Home nudge, not a gate.
+  if (brand && team && announce) next = "complete";
   if (next !== current) {
     await db
       .update(organizations)

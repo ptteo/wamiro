@@ -528,9 +528,9 @@ export function PayrollClient({ data }: { data: PayrollData }) {
             </form>
           </section>
 
-          <div className="grid gap-5 lg:grid-cols-2">
+          <div className="grid min-w-0 gap-5 lg:grid-cols-2">
             {/* ── Structures ── */}
-            <section className="rounded-lg border border-border-subtle bg-surface p-4">
+            <section className="min-w-0 overflow-hidden rounded-lg border border-border-subtle bg-surface p-4">
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-primary">
                 <Receipt className="h-4 w-4 text-tertiary" /> Salary structures
               </h2>
@@ -663,35 +663,37 @@ export function PayrollClient({ data }: { data: PayrollData }) {
             </section>
 
             {/* ── Components + bank + YTD ── */}
-            <div className="space-y-5">
-              <section className="rounded-lg border border-border-subtle bg-surface p-4">
+            <div className="min-w-0 space-y-5">
+              <section className="min-w-0 overflow-hidden rounded-lg border border-border-subtle bg-surface p-4">
                 <h2 className="mb-3 text-sm font-semibold text-primary">Component library</h2>
-                <form onSubmit={createComponent} className="mb-3 grid gap-2 rounded-md bg-surface-subtle p-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
-                  <label className="flex flex-col text-[11px] font-medium text-secondary">
+                <form onSubmit={createComponent} className="mb-3 grid min-w-0 grid-cols-1 gap-2 rounded-md bg-surface-subtle p-3 sm:grid-cols-2">
+                  <label className="flex min-w-0 flex-col text-[11px] font-medium text-secondary sm:col-span-2">
                     Name
-                    <input value={compName} onChange={(e) => setCompName(e.target.value)} placeholder="HRA / PF / Laptop allowance…" className="mt-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary placeholder:text-tertiary" />
+                    <input value={compName} onChange={(e) => setCompName(e.target.value)} placeholder="HRA / PF / Laptop allowance…" className="mt-1 min-w-0 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary placeholder:text-tertiary" />
                   </label>
-                  <label className="flex flex-col text-[11px] font-medium text-secondary">
+                  <label className="flex min-w-0 flex-col text-[11px] font-medium text-secondary">
                     Type
-                    <select value={compType} onChange={(e) => setCompType(e.target.value as "earning" | "deduction")} className="mt-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary">
+                    <select value={compType} onChange={(e) => setCompType(e.target.value as "earning" | "deduction")} className="mt-1 min-w-0 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary">
                       <option value="earning">Earning</option>
                       <option value="deduction">Deduction</option>
                     </select>
                   </label>
-                  <label className="flex flex-col text-[11px] font-medium text-secondary">
+                  <label className="flex min-w-0 flex-col text-[11px] font-medium text-secondary">
                     Basis
-                    <select value={compAmountType} onChange={(e) => setCompAmountType(e.target.value as "fixed" | "percent_of_basic")} className="mt-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary">
+                    <select value={compAmountType} onChange={(e) => setCompAmountType(e.target.value as "fixed" | "percent_of_basic")} className="mt-1 min-w-0 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary">
                       <option value="fixed">Fixed amount</option>
                       <option value="percent_of_basic">% of basic</option>
                     </select>
                   </label>
-                  <label className="flex flex-col text-[11px] font-medium text-secondary">
+                  <label className="flex min-w-0 flex-col text-[11px] font-medium text-secondary">
                     Default
-                    <input type="number" min={0} step={compAmountType === "percent_of_basic" ? 0.5 : 0.01} value={compAmount} onChange={(e) => setCompAmount(e.target.value)} className="mt-1 w-24 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary" />
+                    <input type="number" min={0} step={compAmountType === "percent_of_basic" ? 0.5 : 0.01} value={compAmount} onChange={(e) => setCompAmount(e.target.value)} className="mt-1 min-w-0 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary" />
                   </label>
-                  <Button size="sm" variant="primary" loading={busy}>
-                    <Plus className="h-3.5 w-3.5" /> Add
-                  </Button>
+                  <div className="sm:col-span-2">
+                    <Button size="sm" variant="primary" loading={busy} className="w-full sm:w-auto">
+                      <Plus className="h-3.5 w-3.5" /> Add
+                    </Button>
+                  </div>
                 </form>
                 {data.components.length === 0 ? (
                   <p className="text-sm text-tertiary">No components yet.</p>

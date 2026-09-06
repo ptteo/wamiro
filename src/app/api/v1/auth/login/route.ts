@@ -23,17 +23,46 @@ const bodySchema = z.object({
   totpCode: z.string().max(10).optional(),
 });
 
+function isFormPost(req: NextRequest): boolean {
+  const ct = req.headers.get("content-type") ?? "";
+  return ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data");
+}
+
+function loginFail(req: NextRequest, form: boolean, error: ApiError): never | NextResponse {
+  if (!form) throw error;
+  const url = new URL("/login", req.url);
+  url.searchParams.set("error", error.message);
+  return NextResponse.redirect(url, 303);
+}
+
+async function readLoginBody(req: NextRequest) {
+  if (isFormPost(req)) {
+    const fd = await req.formData();
+    return {
+      form: true,
+      parsed: bodySchema.safeParse({
+        email: fd.get("email"),
+        password: fd.get("password"),
+        mfaToken: String(fd.get("mfaToken") ?? "") || undefined,
+        totpCode: String(fd.get("totpCode") ?? "") || undefined,
+      }),
+    };
+  }
+  return { form: false, parsed: bodySchema.safeParse(await req.json().catch(() => null)) };
+}
+
 export const POST = route(
   async (req: NextRequest) => {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+    const form = isFormPost(req);
     // Phase D: shared (DB) limiter — holds across instances.
     await enforceRateLimit("ip", `login:${ip}`, {
       limit: Number(process.env.RATE_LIMIT_AUTH_PER_15MIN ?? 40),
       windowSeconds: 900,
     });
 
-    const parsed = bodySchema.safeParse(await req.json().catch(() => null));
-    if (!parsed.success) throw ApiError.badRequest("Email and password required");
+    const { parsed } = await readLoginBody(req);
+    if (!parsed.success) return loginFail(req, form, ApiError.badRequest("Email and password required"));
 
     const email = parsed.data.email.trim().toLowerCase();
     const [row] = await db
@@ -56,7 +85,11 @@ export const POST = route(
       .limit(1);
 
     if (row && isLocked(row.lockedUntil)) {
-      throw ApiError.forbidden("This account is locked for 30 minutes after too many failed sign-ins.");
+      return loginFail(
+        req,
+        form,
+        ApiError.forbidden("This account is locked for 30 minutes after too many failed sign-ins."),
+      );
     }
 
     // constant-ish behavior whether or not the account exists
@@ -76,22 +109,26 @@ export const POST = route(
         ip,
         userAgent: req.headers.get("user-agent"),
       });
-      throw ApiError.unauthorized("Incorrect email or password");
+      return loginFail(req, form, ApiError.unauthorized("Incorrect email or password"));
     }
     if (row.status === "invited") {
-      throw ApiError.forbidden("Open the invite link we sent to set your password.");
+      return loginFail(req, form, ApiError.forbidden("Open the invite link we sent to set your password."));
     }
     if (!emailAllowedForDomains(email, row.allowedEmailDomains)) {
-      throw ApiError.forbidden("This organization only allows company email addresses.");
+      return loginFail(req, form, ApiError.forbidden("This organization only allows company email addresses."));
     }
     if (row.status === "suspended" || row.orgStatus !== "active") {
-      throw ApiError.forbidden("Account or organization suspended");
+      return loginFail(req, form, ApiError.forbidden("Account or organization suspended"));
     }
     if (row.authMethod === "sso") {
-      throw ApiError.forbidden("This account uses single sign-on. Sign in with SSO instead.");
+      return loginFail(req, form, ApiError.forbidden("This account uses single sign-on. Sign in with SSO instead."));
     }
     if (row.orgBillingStatus === "cancelled") {
-      throw ApiError.forbidden("This organization's subscription has ended. Contact support to reactivate.");
+      return loginFail(
+        req,
+        form,
+        ApiError.forbidden("This organization's subscription has ended. Contact support to reactivate."),
+      );
     }
 
     // ---- MFA second step ----
@@ -117,7 +154,7 @@ export const POST = route(
           entityId: email,
           ip,
         });
-        throw ApiError.unauthorized("Invalid authentication code");
+        return loginFail(req, form, ApiError.unauthorized("Invalid authentication code"));
       }
       mfaToken = undefined; // consumed
     }
@@ -136,7 +173,9 @@ export const POST = route(
       userAgent: req.headers.get("user-agent"),
     });
 
-    const res = NextResponse.json({ ok: true, redirect: "/home" });
+    const res = form
+      ? NextResponse.redirect(new URL("/home", req.url), 303)
+      : NextResponse.json({ ok: true, redirect: "/home" });
     res.cookies.set(SESSION_COOKIE, session.token, cookieOptions(session.expiresAt));
     return res;
   },

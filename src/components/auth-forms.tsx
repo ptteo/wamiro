@@ -7,10 +7,10 @@ import { btn, input } from "./ui";
 
 type Mode = "login" | "register";
 
-export function AuthForm({ mode }: { mode: Mode }) {
+export function AuthForm({ mode, initialError }: { mode: Mode; initialError?: string | null }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError ?? null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   // MFA second step: hold step-one credentials + pending token
   const [mfa, setMfa] = useState<{ token: string; email: string; password: string } | null>(null);
@@ -80,7 +80,13 @@ export function AuthForm({ mode }: { mode: Mode }) {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4" noValidate>
+    <form
+      method="post"
+      action={mode === "login" ? "/api/v1/auth/login" : undefined}
+      onSubmit={onSubmit}
+      className="space-y-4"
+      noValidate
+    >
       {mfa ? (
         <>
           <p className="text-sm text-[var(--color-muted)]">
@@ -119,16 +125,26 @@ export function AuthForm({ mode }: { mode: Mode }) {
             </>
           )}
           <Field label="Work email" name="email" error={fieldErrors["email"]?.[0]}>
-            <input className={input} type="email" name="email" required autoComplete="email" />
+            <input
+              id="email"
+              className={input}
+              type="email"
+              name="email"
+              required
+              autoComplete="email"
+              suppressHydrationWarning
+            />
           </Field>
           <Field label="Password" name="password" error={fieldErrors["password"]?.[0]}>
             <input
+              id="password"
               className={input}
               type="password"
               name="password"
               required
               minLength={mode === "register" ? 10 : 1}
               autoComplete={mode === "register" ? "new-password" : "current-password"}
+              suppressHydrationWarning
             />
           </Field>
           {mode === "login" && !mfa ? (

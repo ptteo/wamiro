@@ -13,6 +13,8 @@ export type DomainEventType =
   | "employee.created"
   | "leave.requested"
   | "leave.approved"
+  | "leave.cancelled"
+  | "leave.cancel_requested"
   | "leave.rejected"
   | "request.created"
   | "request.approved"

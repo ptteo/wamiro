@@ -2,16 +2,17 @@
 /* eslint-disable react/no-unescaped-entities */
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CircleAlert,
   History,
   PlaneTakeoff,
 } from "lucide-react";
 
-import { ApplyLeaveForm, ReviewButtons } from "./leave-forms";
-import { Avatar, Badge } from "./ui";
+import { ApplyLeaveForm, ForceCancelButton, LeaveSelfActions, ReviewButtons } from "./leave-forms";
+import { Avatar, Badge, EmptyState, btn } from "./ui";
 import { cx } from "@/lib/cx";
+import { type TeamOutRow, type TeamWeek } from "@/modules/leave/dates";
 
 export interface LeaveData {
   balances: {
@@ -28,6 +29,7 @@ export interface LeaveData {
     startDate: string;
     endDate: string;
     days: number;
+    rangeLabel?: string;
     status: string;
     reason: string | null;
     reviewNote: string | null;
@@ -44,17 +46,12 @@ export interface LeaveData {
     startDate: string;
     endDate: string;
     days: number;
+    rangeLabel?: string;
     reason: string | null;
+    kind: "apply" | "cancel";
   }[];
-  teamOut: {
-    id: string;
-    userId: string;
-    userName: string;
-    typeName: string;
-    startDate: string;
-    endDate: string;
-    days: number;
-  }[];
+  teamOut?: Omit<TeamOutRow, "rangeLabel">[];
+  teamWeeks?: TeamWeek[];
 }
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "cancelled";
@@ -65,19 +62,10 @@ const STATUS_TONES: Record<string, "neutral" | "amber" | "green" | "red" | "bran
   approved: "green",
   rejected: "red",
   cancelled: "neutral",
+  cancel_requested: "amber",
 };
 
-function fmtRange(start: string, end: string): string {
-  const s = new Date(start + "T00:00:00");
-  const e = new Date(end + "T00:00:00");
-  if (start === end) {
-    return s.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-  if (s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth()) {
-    return `${s.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${e.getDate()}`;
-  }
-  return `${s.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${e.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
-}
+const EMPTY_TRIPS: LeaveData["teamOut"] = [];
 
 function balanceTone(remaining: number, entitled: number): "green" | "amber" | "red" {
   if (entitled <= 0) return "amber";
@@ -87,11 +75,28 @@ function balanceTone(remaining: number, entitled: number): "green" | "amber" | "
   return "green";
 }
 
-export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boolean }) {
+export function LeaveClient({
+  data,
+  todayIso,
+  canApply,
+  canApprove,
+}: {
+  data: LeaveData;
+  todayIso: string;
+  canApply: boolean;
+  canApprove: boolean;
+}) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [calendarReady, setCalendarReady] = useState(false);
+  useEffect(() => {
+    setCalendarReady(true);
+  }, []);
 
   const filteredRequests = useMemo(() => {
     if (statusFilter === "all") return data.requests;
+    if (statusFilter === "pending") {
+      return data.requests.filter((r) => r.status === "pending" || r.status === "cancel_requested");
+    }
     return data.requests.filter((r) => r.status === statusFilter);
   }, [data.requests, statusFilter]);
 
@@ -99,7 +104,7 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
   const groupedByYear = useMemo(() => {
     const map = new Map<string, typeof data.requests>();
     for (const r of filteredRequests) {
-      const y = new Date(r.startDate + "T00:00:00").getFullYear().toString();
+      const y = r.startDate.slice(0, 4);
       const arr = map.get(y) ?? [];
       arr.push(r);
       map.set(y, arr);
@@ -107,25 +112,9 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
     return Array.from(map.entries()).sort((a, b) => Number(b[0]) - Number(a[0]));
   }, [filteredRequests]);
 
-  // Group team out by ISO week
-  const teamOutByWeek = useMemo(() => {
-    const map = new Map<string, typeof data.teamOut>();
-    for (const r of data.teamOut) {
-      const start = new Date(r.startDate + "T00:00:00");
-      // ISO week: find Monday
-      const dow = start.getUTCDay();
-      const offset = (dow + 6) % 7;
-      const monday = new Date(start);
-      monday.setUTCDate(start.getUTCDate() - offset);
-      const key = monday.toISOString().slice(0, 10);
-      const arr = map.get(key) ?? [];
-      arr.push(r);
-      map.set(key, arr);
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      .slice(0, 8);
-  }, [data.teamOut]);
+  const teamOut = Array.isArray(data.teamOut) ? data.teamOut : EMPTY_TRIPS;
+  const teamWeeks = Array.isArray(data.teamWeeks) ? data.teamWeeks : [];
+  const tripCount = teamOut.length || teamWeeks.reduce((n, w) => n + w.rows.length, 0);
 
   return (
     <div className="space-y-6">
@@ -185,8 +174,11 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
           ) : null}
 
           {/* Apply form */}
+          {!(canApply && data.types.length > 0) ? <div data-tour="leave-apply" className="sr-only" /> : null}
           {canApply && data.types.length > 0 ? (
             <section
+              id="leave-apply"
+              data-tour="leave-apply"
               aria-label="Apply for leave"
               className="rounded-lg border border-border-subtle bg-surface"
             >
@@ -231,14 +223,22 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
               </div>
             </div>
             {filteredRequests.length === 0 ? (
-              <div className="px-4 py-8 text-center">
-                <History className="mx-auto h-6 w-6 text-tertiary" />
-                <p className="mt-2 text-sm text-tertiary">
-                  {data.requests.length === 0
-                    ? "You haven't requested leave yet."
-                    : "No requests match this filter."}
-                </p>
-              </div>
+              <EmptyState
+                title={data.requests.length === 0 ? "No leave requests yet" : "No requests match this filter"}
+                hint={
+                  data.requests.length === 0
+                    ? "Apply for leave when you need time off. Your manager reviews it."
+                    : "Try another status filter."
+                }
+                icon={<History className="h-5 w-5" />}
+                action={
+                  canApply && data.types.length > 0 && data.requests.length === 0 ? (
+                    <a href="#leave-apply" className={`${btn.primary} ${btn.small} mt-3`}>
+                      Apply leave
+                    </a>
+                  ) : undefined
+                }
+              />
             ) : (
               <ol>
                 {groupedByYear.map(([year, rows]) => (
@@ -265,7 +265,7 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
                               {r.typeName}
                             </p>
                             <p className="text-[11px] text-tertiary tabular-nums">
-                              {fmtRange(r.startDate, r.endDate)} · {r.days}d
+                              {r.rangeLabel ?? `${r.startDate}–${r.endDate}`} · {r.days}d
                               {r.reason ? ` · ${r.reason}` : ""}
                             </p>
                             {r.reviewNote ? (
@@ -275,8 +275,16 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
                             ) : null}
                           </div>
                           <Badge tone={STATUS_TONES[r.status] ?? "neutral"}>
-                            {r.status}
+                            {r.status.replace("_", " ")}
                           </Badge>
+                          {canApply ? (
+                            <LeaveSelfActions
+                              requestId={r.id}
+                              status={r.status}
+                              endDate={r.endDate}
+                              today={todayIso}
+                            />
+                          ) : null}
                         </li>
                       ))}
                     </ul>
@@ -289,83 +297,71 @@ export function LeaveClient({ data, canApply }: { data: LeaveData; canApply: boo
 
         {/* RIGHT: team calendar + approve info */}
         <aside className="space-y-5">
-          {teamOutByWeek.length > 0 ? (
-            <section
-              aria-label="Team calendar"
-              className="rounded-lg border border-border-subtle bg-surface"
-            >
-              <div className="flex items-center justify-between border-b border-border-subtle px-4 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-tertiary">
-                  Team out · next 8 weeks
-                </p>
-                <span className="rounded-full bg-surface-subtle px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-tertiary">
-                  {data.teamOut.length} trip{data.teamOut.length === 1 ? "" : "s"}
-                </span>
+          <section
+            aria-label="Team calendar"
+            className="rounded-lg border border-border-subtle bg-surface"
+          >
+            <div className="flex items-center justify-between border-b border-border-subtle px-4 py-2.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-tertiary">
+                Team out · next 8 weeks
+              </p>
+              <span className="rounded-full bg-surface-subtle px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-tertiary">
+                {tripCount} trip{tripCount === 1 ? "" : "s"}
+              </span>
+            </div>
+            {!calendarReady ? (
+              <div className="h-16" aria-hidden />
+            ) : teamWeeks.length === 0 ? (
+              <div className="p-6 text-center">
+                <PlaneTakeoff className="mx-auto h-6 w-6 text-tertiary" />
+                <p className="mt-2 text-sm font-medium text-primary">No one is out soon</p>
+                <p className="mt-1 text-xs text-tertiary">Approved leave for the next 8 weeks will show up here.</p>
               </div>
+            ) : (
               <ol>
-                {teamOutByWeek.map(([mondayIso, rows]) => {
-                  const monday = new Date(mondayIso + "T00:00:00");
-                  const sunday = new Date(monday);
-                  sunday.setUTCDate(monday.getUTCDate() + 6);
-                  const isCurrentWeek = monday <= new Date() && new Date() <= sunday;
-                  return (
-                    <li key={mondayIso} className="border-b border-border-subtle px-4 py-2.5 last:border-b-0">
-                      <div className="flex items-baseline justify-between">
-                        <p
-                          className={cx(
-                            "text-[10px] font-semibold uppercase tracking-wide",
-                            isCurrentWeek ? "text-brand-text" : "text-tertiary",
-                          )}
-                        >
-                          {monday.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                          {monday.getUTCMonth() === sunday.getUTCMonth()
-                            ? `–${sunday.getDate()}`
-                            : ` – ${sunday.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`}
-                        </p>
-                        {isCurrentWeek ? (
-                          <span className="rounded-full bg-brand-subtle px-1.5 py-0.5 text-[10px] font-medium text-brand-text">
-                            This week
-                          </span>
-                        ) : null}
-                      </div>
-                      <ul className="mt-1 space-y-1">
-                        {rows.map((r) => (
-                          <li
-                            key={r.id}
-                            className="flex items-center gap-2 text-xs"
+                {teamWeeks.map((week) => (
+                  <li key={week.mondayIso} className="border-b border-border-subtle px-4 py-2.5 last:border-b-0">
+                    <div className="flex items-baseline justify-between">
+                      <p
+                        className={cx(
+                          "text-[10px] font-semibold uppercase tracking-wide",
+                          week.current ? "text-brand-text" : "text-tertiary",
+                        )}
+                      >
+                        {week.label}
+                      </p>
+                      {week.current ? (
+                        <span className="rounded-full bg-brand-subtle px-1.5 py-0.5 text-[10px] font-medium text-brand-text">
+                          This week
+                        </span>
+                      ) : null}
+                    </div>
+                    <ul className="mt-1 space-y-1">
+                      {week.rows.map((r) => (
+                        <li key={r.id} className="flex items-center gap-2 text-xs">
+                          <Avatar
+                            name={r.userName}
+                            className="!h-5 !w-5 text-[9px] ring-1 ring-border-subtle"
+                          />
+                          <Link
+                            href={`/people/${r.userId}`}
+                            className="truncate text-primary hover:underline"
                           >
-                            <Avatar
-                              name={r.userName}
-                              className="!h-5 !w-5 text-[9px] ring-1 ring-border-subtle"
-                            />
-                            <Link
-                              href={`/people/${r.userId}`}
-                              className="truncate text-primary hover:underline"
-                            >
-                              {r.userName}
-                            </Link>
-                            <span className="text-tertiary">·</span>
-                            <span className="truncate text-tertiary">
-                              {r.typeName} · {fmtRange(r.startDate, r.endDate)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </li>
-                  );
-                })}
+                            {r.userName}
+                          </Link>
+                          <span className="text-tertiary">·</span>
+                          <span className="truncate text-tertiary">
+                            {r.typeName} · {r.rangeLabel}
+                          </span>
+                          {canApprove ? <ForceCancelButton requestId={r.id} /> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
               </ol>
-            </section>
-          ) : (
-            <section
-              aria-label="Team calendar"
-              className="rounded-lg border border-border-subtle bg-surface p-6 text-center"
-            >
-              <PlaneTakeoff className="mx-auto h-6 w-6 text-tertiary" />
-              <p className="mt-2 text-sm font-medium text-primary">No one is out soon</p>
-              <p className="mt-1 text-xs text-tertiary">Approved leave for the next 8 weeks will show up here.</p>
-            </section>
-          )}
+            )}
+          </section>
         </aside>
       </div>
     </div>
@@ -409,6 +405,11 @@ function ApprovalsQueue({
             />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-primary">
+                {a.kind === "cancel" ? (
+                  <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-warning">
+                    Cancel
+                  </span>
+                ) : null}
                 {a.userName}
                 {a.departmentName ? (
                   <span className="ml-1 text-xs font-normal text-tertiary">
@@ -417,11 +418,12 @@ function ApprovalsQueue({
                 ) : null}
               </p>
               <p className="text-[11px] text-tertiary tabular-nums">
-                {a.typeName} · {fmtRange(a.startDate, a.endDate)} · {a.days}d
+                {a.kind === "cancel" ? "Cancel request · " : ""}
+                {a.typeName} · {a.rangeLabel ?? `${a.startDate}–${a.endDate}`} · {a.days}d
                 {a.reason ? ` · ${a.reason}` : ""}
               </p>
             </div>
-            <ReviewButtons requestId={a.id} />
+            <ReviewButtons requestId={a.id} kind={a.kind} />
           </li>
         ))}
       </ol>

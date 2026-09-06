@@ -1,10 +1,13 @@
 import { eq } from "drizzle-orm";
 
 import { ChangePasswordForm, OwnSessions } from "@/components/password-sessions-client";
+import { EmailPrefsClient } from "@/components/email-prefs-client";
 import { SecurityClient } from "@/components/security-client";
 import { PageHeader } from "@/components/page-header";
 import { db } from "@/lib/db";
+import { parseEmailPrefs } from "@/lib/email-prefs";
 import { requireAuthPage } from "@/lib/page-auth";
+import { getMergedPreferences } from "@/modules/prefs/service";
 import { users } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +26,8 @@ export default async function SecurityPage({
     .from(users)
     .where(eq(users.id, ctx.user.id))
     .limit(1);
+  const prefs = await getMergedPreferences(ctx.user.id, ctx.user.organizationId);
+  const emailPrefs = parseEmailPrefs(prefs.emailPrefs);
 
   return (
     <div className="min-w-0 space-y-5">
@@ -44,6 +49,16 @@ export default async function SecurityPage({
           <p className="mt-0.5 text-xs text-tertiary">Current password required. Other devices are signed out.</p>
         </div>
         <ChangePasswordForm />
+      </section>
+
+      <section className="rounded-lg border border-border-subtle bg-surface">
+        <div className="border-b border-border-subtle px-4 py-3 sm:px-5">
+          <h2 className="text-sm font-semibold text-primary">Email notifications</h2>
+          <p className="mt-0.5 text-xs text-tertiary">
+            Quiet hours skip email only. In-app notifications still arrive. Weekly digest uses the jobs worker.
+          </p>
+        </div>
+        <EmailPrefsClient initial={emailPrefs} />
       </section>
 
       <section className="rounded-lg border border-border-subtle bg-surface">

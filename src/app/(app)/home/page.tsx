@@ -21,10 +21,13 @@ import {
 
 import { Avatar, Badge, Card, CardHeader, EmptyState, Stat } from "@/components/ui";
 import { ClockInButton } from "@/components/clock-button";
+import { RoleChecklistCard } from "@/components/role-checklist-card";
 import { requireAuthPage } from "@/lib/page-auth";
 import { homeSummary } from "@/modules/home/service";
 import { setupChecklist, type SetupStep } from "@/modules/org/service";
 import { syncOnboardingState } from "@/modules/org/policies";
+import { roleChecklists } from "@/modules/onboarding/checklists";
+import { getMergedPreferences } from "@/modules/prefs/service";
 import { can } from "@/modules/iam/engine";
 import type {
   ActivityItem,
@@ -199,6 +202,9 @@ export default async function HomePage() {
   const isSetupAdmin = can(ctx.access, "settings.manage") || can(ctx.access, "users.manage");
   if (isSetupAdmin) await syncOnboardingState(ctx);
   const setup = isSetupAdmin ? await setupChecklist(ctx) : null;
+  const prefs = await getMergedPreferences(ctx.user.id, ctx.user.organizationId);
+  const dismissed = (prefs.roleChecklist as { dismissed?: Record<string, string> } | undefined)?.dismissed ?? {};
+  const checklists = (await roleChecklists(ctx)).filter((c) => !dismissed[c.role] && c.done < c.total);
 
   const firstName = ctx.user.name.split(/\s+/)[0] ?? ctx.user.name;
   const now = new Date();
@@ -308,8 +314,9 @@ export default async function HomePage() {
       {setup && setup.done < setup.total ? (
         <SetupChecklistCard steps={setup.steps} done={setup.done} total={setup.total} />
       ) : null}
+      {checklists.length > 0 ? <RoleChecklistCard checklists={checklists} /> : <div data-tour="home-next" className="sr-only" />}
       {/* ── Greeting row ───────────────────────────────────────────── */}
-      <header className="flex flex-wrap items-center gap-4">
+      <header className="flex flex-wrap items-center gap-4" data-tour="home-greeting">
         <Avatar name={ctx.user.name} className="!h-11 !w-11 text-sm" />
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold leading-tight tracking-tight text-primary">
@@ -328,7 +335,7 @@ export default async function HomePage() {
               {statusPill}
             </span>
           ) : null}
-          <ClockInButton openShift={s.openShift} />
+          <ClockInButton openShift={s.openShift} tour="home-clock" />
         </div>
       </header>
 
@@ -393,7 +400,7 @@ export default async function HomePage() {
         </div>
       </div>
 
-      {/* ── Mobile bottom action bar (fixed, visible < 1024px) ──── */}
+      {/* ── Mobile bottom action bar (fixed, visible < md so it never covers the sidebar) ──── */}
       {quickActions.length > 0 ? (
         <MobileActionBar actions={quickActions} />
       ) : null}
@@ -673,7 +680,7 @@ function MobileActionBar({ actions }: { actions: { href: string; label: string }
   return (
     <nav
       aria-label="Quick actions"
-      className="fixed inset-x-0 bottom-0 z-[var(--z-sticky)] flex justify-around border-t border-border-subtle bg-surface/95 px-2 py-2 backdrop-blur lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-[var(--z-sticky)] flex justify-around border-t border-border-subtle bg-surface/95 px-2 py-2 backdrop-blur md:hidden"
     >
       {actions.map((a) => (
         <Link

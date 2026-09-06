@@ -568,6 +568,17 @@ export async function setUserStatus(
     // offboarding step: access gone ⇒ live sessions die immediately
     const deleted = await db.delete(sessions).where(eq(sessions.userId, userId)).returning({ id: sessions.id });
     revokedSessions = deleted.length;
+    // Seat count is memberships with status=active. Leaving the membership
+    // active after suspend kept Starter orgs stuck at the cap.
+    await db
+      .update(organizationMemberships)
+      .set({ status: "suspended" })
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.organizationId, ctx.user.organizationId),
+        ),
+      );
     const [gone] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1);
     if (gone) {
       const { invalidateInvitesForUser } = await import("@/modules/invitations/service");
@@ -584,6 +595,15 @@ export async function setUserStatus(
       .update(employees)
       .set({ leftAt: null })
       .where(and(eq(employees.userId, userId), eq(employees.organizationId, ctx.user.organizationId)));
+    await db
+      .update(organizationMemberships)
+      .set({ status: "active" })
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.organizationId, ctx.user.organizationId),
+        ),
+      );
   }
 
   await audit({

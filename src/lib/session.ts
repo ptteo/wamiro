@@ -17,6 +17,7 @@ import {
   users,
 } from "@/db/schema";
 import { computeEffectiveAccess, type EffectiveAccess, type Grant, type Override } from "@/modules/iam/engine";
+import { hasStoredLogo } from "@/modules/org/branding";
 
 export const SESSION_COOKIE = "wamiro_session";
 const SESSION_TTL_DAYS = 14;
@@ -244,9 +245,14 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
     expiresAt: o.expiresAt,
   }));
 
+  const org = row.org;
+  if (org.logoUrl && !(await hasStoredLogo(org.id))) {
+    org.logoUrl = null;
+  }
+
   return {
     user: row.user,
-    org: row.org,
+    org,
     access: computeEffectiveAccess(grants, overrides),
     roleKeys: roleRows.map((r) => r.key),
     roleNames: roleRows.map((r) => r.name),

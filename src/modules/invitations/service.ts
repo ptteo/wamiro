@@ -266,7 +266,8 @@ export async function acceptInvitation(
     entityType: "user",
     entityId: row.userId,
   });
-  const redirect = org.onboardingState === "complete" ? "/home" : "/setup";
+  const canRunSetup = row.roleKey === "admin" || row.roleKey === "hr_admin";
+  const redirect = org.onboardingState !== "complete" && canRunSetup ? "/setup" : "/home";
   return { token: session.token, expiresAt: session.expiresAt, redirect };
 }
 
