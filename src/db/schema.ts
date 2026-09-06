@@ -129,6 +129,14 @@ export const organizations = pgTable(
     passwordMode: text("password_mode").notNull().default("self_service"),
     /** pending | admin_done | employees_seeded | complete. Existing orgs stay complete. */
     onboardingState: text("onboarding_state").notNull().default("complete"),
+    /** Phase 4 GDPR — staged deletion: set when the admin requests it; the
+     * jobs sweep purges the tenant after the 7-day undo window. */
+    deletionRequestedAt: timestamp("deletion_requested_at", { withTimezone: true }),
+    // Plain uuid, no FK reference: organizations is defined before users in
+    // this file, and a back-reference would create a type inference cycle.
+    // The FK lives in the migration (0058) instead.
+    deletionRequestedBy: uuid("deletion_requested_by"),
+    deletionConfirmText: text("deletion_confirm_text"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

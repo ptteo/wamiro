@@ -25,6 +25,9 @@ import { escalateOverdueObligationsInOrg } from "@/modules/governance/service";
 import { sweepExpiredTrials } from "@/modules/billing/service";
 import { pollAllMailboxes } from "@/modules/mailboxes/service";
 import { sendWeeklyDigests } from "@/modules/notifications/service";
+import { purgeDueDeletions } from "@/modules/org/service";
+import { runRetentionSweep } from "@/modules/retention/service";
+import { sweepOrphanedObjects } from "@/modules/storage/orphans";
 
 export type JobResult = { ok: boolean; detail: Record<string, unknown> };
 type Job = () => Promise<JobResult>;
@@ -36,6 +39,10 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   governance_sweep: { run: runPerOrgGovernanceSweep, everyMs: 60 * 60_000 },
   mailbox_poll: { run: runMailboxPoll, everyMs: 60_000 },
   email_digest: { run: runEmailDigest, everyMs: 60 * 60_000 },
+  // Phase 4 — data-layer housekeeping
+  retention_sweep: { run: runRetentionSweepJob, everyMs: 12 * 60 * 60_000 },
+  deletion_sweep: { run: runDeletionSweepJob, everyMs: 60 * 60_000 },
+  cleanup_orphans: { run: runOrphanCleanupJob, everyMs: 24 * 60 * 60_000 },
 };
 
 /** Tenant ids the per-org sweeps iterate (platform org excluded). */
@@ -134,6 +141,36 @@ async function runMailboxPoll(): Promise<JobResult> {
     return { ok: true, detail: { mailboxes: results.length } };
   } catch (e) {
     // imapflow not installed / network down — record, never crash the worker
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Phase 4 — purge tenants whose 7-day deletion undo window has passed. */
+async function runDeletionSweepJob(): Promise<JobResult> {
+  try {
+    const purged = await purgeDueDeletions();
+    return { ok: true, detail: { purged } };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Phase 4 — bounded retention cleanup of short-lived tables. */
+async function runRetentionSweepJob(): Promise<JobResult> {
+  try {
+    const { deleted } = await runRetentionSweep();
+    return { ok: true, detail: { deleted } };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Phase 4 — remove stored objects whose DB rows are gone. */
+async function runOrphanCleanupJob(): Promise<JobResult> {
+  try {
+    const r = await sweepOrphanedObjects();
+    return { ok: true, detail: r };
+  } catch (e) {
     return { ok: false, detail: { error: String(e).slice(0, 300) } };
   }
 }

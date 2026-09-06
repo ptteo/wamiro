@@ -65,7 +65,7 @@ const STATUS_TONES: Record<string, "neutral" | "amber" | "green" | "red" | "bran
   cancel_requested: "amber",
 };
 
-const EMPTY_TRIPS: LeaveData["teamOut"] = [];
+const EMPTY_TRIPS: NonNullable<LeaveData["teamOut"]> = [];
 
 function balanceTone(remaining: number, entitled: number): "green" | "amber" | "red" {
   if (entitled <= 0) return "amber";

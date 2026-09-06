@@ -148,6 +148,11 @@ export default async function AdminPage() {
             Audit log
           </Link>
         ) : null}
+        {can(ctx.access, "users.manage") ? (
+          <Link href="/admin/storage" className={`${btn.secondary} ${btn.small}`}>
+            Storage
+          </Link>
+        ) : null}
         {can(ctx.access, "roles.manage") ? (
           <Link href="/admin/access-reviews" className={`${btn.secondary} ${btn.small}`}>
             Access reviews

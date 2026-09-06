@@ -65,6 +65,36 @@ export const env = {
     loadDotEnvOnce();
     return process.env.VAPID_SUBJECT ?? `mailto:admin@${hostOnly(process.env.APP_URL ?? "localhost")}`;
   },
+  // ---------- Phase 4: object storage (Cloudflare R2 / S3-compatible) ----------
+  // When all four are set, src/lib/storage.ts routes through S3 (keys stay
+  // tenant/{organizationId}/…). Absent → local disk under WAMIRO_DATA_DIR.
+  get S3_ENDPOINT(): string | undefined {
+    loadDotEnvOnce();
+    return process.env.S3_ENDPOINT?.trim() || undefined;
+  },
+  get S3_BUCKET(): string | undefined {
+    loadDotEnvOnce();
+    return process.env.S3_BUCKET?.trim() || undefined;
+  },
+  get S3_ACCESS_KEY_ID(): string | undefined {
+    loadDotEnvOnce();
+    return process.env.S3_ACCESS_KEY_ID || undefined;
+  },
+  get S3_SECRET_ACCESS_KEY(): string | undefined {
+    loadDotEnvOnce();
+    return process.env.S3_SECRET_ACCESS_KEY || undefined;
+  },
+  /** R2 uses "auto"; MinIO/Wasabi etc. may need a real region. */
+  get S3_REGION(): string {
+    loadDotEnvOnce();
+    return process.env.S3_REGION?.trim() || "auto";
+  },
+  /** Path-style addressing is the safe default for R2/MinIO custom endpoints. */
+  get S3_FORCE_PATH_STYLE(): boolean {
+    loadDotEnvOnce();
+    const v = process.env.S3_FORCE_PATH_STYLE?.trim().toLowerCase();
+    return v !== "0" && v !== "false";
+  },
   get isProd() {
     return process.env.NODE_ENV === "production";
   },

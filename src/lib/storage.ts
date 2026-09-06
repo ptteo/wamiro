@@ -1,14 +1,29 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-
 /**
- * Storage adapter. v1 = local disk under WAMIRO_DATA_DIR (default ./data),
- * keys namespaced per tenant: tenant/{organizationId}/documents/{uuid}-{name}.
+ * Storage adapter (Phase 4 — object storage).
  *
- * ponytail: swap this file for an S3/MinIO implementation when the blueprint's
- * object-storage phase lands — callers only see save/read/remove by key.
+ * v2 = Cloudflare R2 / any S3-compatible endpoint when the S3_* env vars are
+ * set; v1 local disk under WAMIRO_DATA_DIR (default ./data) remains the
+ * fallback so dev, tests and self-hosted setups run without credentials.
+ *
+ * Keys are namespaced per tenant: tenant/{organizationId}/{category}/{uuid}-{name}.
+ * Callers only ever see save/read/remove by key — swapping the backend never
+ * touches a call site.
  */
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
+
+import {
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+
+import { env } from "./env";
 
 const ROOT = resolve(
   process.env.WAMIRO_DATA_DIR ?? join(process.cwd(), "data"),
@@ -19,7 +34,63 @@ export function documentKey(organizationId: string, fileName: string): string {
   return `tenant/${organizationId}/documents/${randomUUID()}-${safe}`;
 }
 
+// ---------- S3 (primary backend when configured) ----------
+
+let cachedClient: S3Client | null = null;
+
+interface S3Config {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  forcePathStyle: boolean;
+}
+
+function s3Config(): S3Config | null {
+  const endpoint = env.S3_ENDPOINT;
+  const bucket = env.S3_BUCKET;
+  const accessKeyId = env.S3_ACCESS_KEY_ID;
+  const secretAccessKey = env.S3_SECRET_ACCESS_KEY;
+  if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) return null;
+  return {
+    endpoint,
+    bucket,
+    region: env.S3_REGION,
+    forcePathStyle: env.S3_FORCE_PATH_STYLE,
+  };
+}
+
+function s3Client(): S3Client | null {
+  const cfg = s3Config();
+  if (!cfg) return null;
+  if (!cachedClient) {
+    cachedClient = new S3Client({
+      endpoint: cfg.endpoint,
+      region: cfg.region,
+      forcePathStyle: cfg.forcePathStyle,
+      credentials: {
+        accessKeyId: env.S3_ACCESS_KEY_ID!,
+        secretAccessKey: env.S3_SECRET_ACCESS_KEY!,
+      },
+    });
+  }
+  return cachedClient;
+}
+
+/** True when the S3_* vars are configured (stats/cleanup pages can say so). */
+export function isObjectStorageConfigured(): boolean {
+  return s3Config() !== null;
+}
+
+// ---------- primitives ----------
+
 export async function saveObject(key: string, data: Buffer): Promise<void> {
+  const client = s3Client();
+  if (client) {
+    await client.send(
+      new PutObjectCommand({ Bucket: s3Config()!.bucket, Key: key, Body: data }),
+    );
+    return;
+  }
   const target = join(ROOT, key);
   if (!target.startsWith(ROOT)) throw new Error("Invalid storage key"); // path traversal guard
   await mkdir(join(target, ".."), { recursive: true });
@@ -27,13 +98,233 @@ export async function saveObject(key: string, data: Buffer): Promise<void> {
 }
 
 export async function readObject(key: string): Promise<Buffer> {
+  const client = s3Client();
+  if (client) {
+    const res = await client.send(
+      new GetObjectCommand({ Bucket: s3Config()!.bucket, Key: key }),
+    );
+    if (!res.Body) throw new Error("Empty object body");
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
   const target = join(ROOT, key);
   if (!target.startsWith(ROOT)) throw new Error("Invalid storage key");
   return readFile(target);
 }
 
 export async function removeObject(key: string): Promise<void> {
+  const client = s3Client();
+  if (client) {
+    await client.send(
+      new DeleteObjectCommand({ Bucket: s3Config()!.bucket, Key: key }),
+    );
+    return;
+  }
   const target = join(ROOT, key);
   if (!target.startsWith(ROOT)) throw new Error("Invalid storage key");
   await unlink(target).catch(() => {}); // already gone is fine
+}
+
+export async function objectExists(key: string): Promise<boolean> {
+  const client = s3Client();
+  if (client) {
+    try {
+      await client.send(
+        new HeadObjectCommand({ Bucket: s3Config()!.bucket, Key: key }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const target = join(ROOT, key);
+  if (!target.startsWith(ROOT)) return false;
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------- listing / stats / bulk removal (Phase 4) ----------
+
+export interface StoredObject {
+  key: string;
+  sizeBytes: number;
+  lastModified: Date | null;
+}
+
+/**
+ * Every stored object under a prefix (keyset-paginated, bounded by `limit`).
+ * Used by storage stats and the orphan sweep.
+ */
+export async function listObjects(
+  prefix: string,
+  opts: { limit?: number } = {},
+): Promise<StoredObject[]> {
+  const client = s3Client();
+  const limit = opts.limit ?? Infinity;
+  if (client) {
+    const bucket = s3Config()!.bucket;
+    const out: StoredObject[] = [];
+    let token: string | undefined;
+    do {
+      const res = await client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          ContinuationToken: token,
+          MaxKeys: Math.min(1000, limit - out.length),
+        }),
+      );
+      for (const o of res.Contents ?? []) {
+        if (o.Key === undefined) continue;
+        out.push({ key: o.Key, sizeBytes: o.Size ?? 0, lastModified: o.LastModified ?? null });
+      }
+      token = res.IsTruncated ? res.NextContinuationToken : undefined;
+    } while (token && out.length < limit);
+    return out;
+  }
+  const base = join(ROOT, prefix);
+  if (!base.startsWith(ROOT)) return [];
+  // Windows join keeps a trailing separator — strip it so the slice below
+  // doesn't eat the first character of the first child name.
+  const baseKey = base.endsWith(sep) ? base.slice(0, -1) : base;
+  const out: StoredObject[] = [];
+  await walkLocal(base, baseKey.length + 1, prefix.replace(/\/$/, ""), out, limit);
+  return out;
+}
+
+async function walkLocal(
+  dir: string,
+  baseLen: number,
+  prefixKey: string,
+  out: StoredObject[],
+  limit: number,
+): Promise<void> {
+  if (out.length >= limit) return;
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return; // missing dir = no objects
+  }
+  for (const e of entries) {
+    if (out.length >= limit) return;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      await walkLocal(full, baseLen, prefixKey, out, limit);
+    } else {
+      const rel = full.slice(baseLen).replace(/\\/g, "/");
+      out.push({ key: `${prefixKey}/${rel}`, sizeBytes: 0, lastModified: null });
+      try {
+        const st = await stat(full);
+        out[out.length - 1]!.sizeBytes = st.size;
+        out[out.length - 1]!.lastModified = st.mtime;
+      } catch {
+        // raced with a delete — drop the entry
+        out.pop();
+      }
+    }
+  }
+}
+
+/** Delete every object under a prefix (used by tenant deletion). Returns count. */
+export async function removeObjectsByPrefix(prefix: string): Promise<number> {
+  const client = s3Client();
+  if (client) {
+    const bucket = s3Config()!.bucket;
+    let removed = 0;
+    let token: string | undefined;
+    do {
+      const res = await client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          ContinuationToken: token,
+          MaxKeys: 1000,
+        }),
+      );
+      const keys = (res.Contents ?? [])
+        .map((o) => o.Key)
+        .filter((k): k is string => !!k);
+      if (keys.length > 0) {
+        await client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: { Objects: keys.map((Key) => ({ Key })) },
+          }),
+        );
+        removed += keys.length;
+      }
+      token = res.IsTruncated ? res.NextContinuationToken : undefined;
+    } while (token);
+    return removed;
+  }
+  const base = join(ROOT, prefix);
+  if (!base.startsWith(ROOT)) return 0;
+  return removeLocalTree(base);
+}
+
+async function removeLocalTree(dir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const e of entries) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      removed += await removeLocalTree(full);
+    } else {
+      await unlink(full).catch(() => {});
+      removed += 1;
+    }
+  }
+  await rmdir(dir).catch(() => {});
+  return removed;
+}
+
+// ---------- per-tenant usage ----------
+
+export interface CategoryUsage {
+  category: string;
+  objectCount: number;
+  sizeBytes: number;
+}
+
+export interface OrgUsage {
+  totalBytes: number;
+  totalObjects: number;
+  byCategory: CategoryUsage[];
+}
+
+/**
+ * Byte usage for one tenant, grouped by category (the 3rd path segment:
+ * documents | hr-documents | branding | …). Listing is the source of truth —
+ * it includes objects whose DB rows are gone (orphans show up as a real cost).
+ * Pass `limit` to bound the listing (fleet views); totals are then an
+ * under-count for orgs above the cap, which the daily orphan sweep still covers.
+ */
+export async function usageForOrg(orgId: string, opts: { limit?: number } = {}): Promise<OrgUsage> {
+  const objects = await listObjects(`tenant/${orgId}/`, { limit: opts.limit });
+  const map = new Map<string, CategoryUsage>();
+  let totalBytes = 0;
+  for (const o of objects) {
+    totalBytes += o.sizeBytes;
+    const category = o.key.split("/")[2] ?? "other";
+    const cur = map.get(category) ?? { category, objectCount: 0, sizeBytes: 0 };
+    cur.objectCount += 1;
+    cur.sizeBytes += o.sizeBytes;
+    map.set(category, cur);
+  }
+  return {
+    totalBytes,
+    totalObjects: objects.length,
+    byCategory: [...map.values()].sort((a, b) => b.sizeBytes - a.sizeBytes),
+  };
 }

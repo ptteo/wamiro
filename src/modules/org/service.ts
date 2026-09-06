@@ -108,15 +108,51 @@ export interface ProvisionOrgInput {
 }
 
 /**
- * Permanently delete a tenant and all of its data.
+ * Permanently delete a tenant and all of its data, including every object in
+ * object storage under tenant/{orgId}/ (documents, HR files, attachments,
+ * branding).
  *
  * Every table except `users` cascades from `organizations.id` (see schema.ts),
  * so the safe order is: delete the org's users first (sessions cascade from
  * users), then the organization row itself, which sweeps the rest. The audit
  * trail has no cascade and survives as a platform-level event.
  *
- * Requires an exact-match typed confirmation (`confirm` === org name) as a
- * hard guard against accidental deletion.
+ * Shared by the immediate delete (typed confirm) and the Phase 4 staged
+ * delete (7-day undo window, purge sweep in the jobs worker).
+ */
+export async function deleteOrganizationData(
+  orgId: string,
+  orgName: string,
+  opts: { actorUserId?: string | null } = {},
+): Promise<{ deleted: string; objectsRemoved: number }> {
+  let objectsRemoved = 0;
+  await db.transaction(async (tx) => {
+    // Sessions cascade from users; other tenant tables cascade from organizations.
+    await tx.delete(users).where(eq(users.organizationId, orgId));
+    await tx.delete(organizations).where(eq(organizations.id, orgId));
+  });
+
+  // Bytes live outside the DB — remove them best-effort after the rows are gone
+  // (a failure here must not resurrect a deleted tenant).
+  const { removeObjectsByPrefix } = await import("@/lib/storage");
+  objectsRemoved = await removeObjectsByPrefix(`tenant/${orgId}/`).catch(() => 0);
+
+  await audit({
+    organizationId: null, // survives after the tenant is gone
+    actorUserId: opts.actorUserId ?? null,
+    action: "ORG_DELETED",
+    entityType: "organization",
+    entityId: orgId,
+    metadata: { name: orgName, objectsRemoved },
+  });
+
+  return { deleted: orgId, objectsRemoved };
+}
+
+/**
+ * Immediate delete (legacy path): exact-match typed confirmation, used by
+ * the existing DELETE /api/v1/org route. Phase 4 replaces this in the UI with
+ * the staged flow, but the endpoint stays for operators and tests.
  */
 export async function deleteOrganization(ctx: AuthContext, confirm: string): Promise<{ deleted: string }> {
   const [org] = await db
@@ -128,23 +164,119 @@ export async function deleteOrganization(ctx: AuthContext, confirm: string): Pro
   if (confirm.trim() !== org.name) {
     throw ApiError.badRequest(`Type \"${org.name}\" exactly to confirm deletion`);
   }
+  const { deleted } = await deleteOrganizationData(org.id, org.name, { actorUserId: ctx.user.id });
+  return { deleted };
+}
 
-  await db.transaction(async (tx) => {
-    // Sessions cascade from users; other tenant tables cascade from organizations.
-    await tx.delete(users).where(eq(users.organizationId, org.id));
-    await tx.delete(organizations).where(eq(organizations.id, org.id));
-  });
+// ---------- Phase 4 GDPR: staged delete-my-company (7-day undo) ----------
 
+export const DELETION_UNDO_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface DeletionStatus {
+  requested: boolean;
+  requestedAt: string | null;
+  undoBy: string | null;
+  requestedByName: string | null;
+}
+
+/** Current deletion-request state for the Settings → Organization page. */
+export async function deletionStatus(ctx: AuthContext): Promise<DeletionStatus> {
+  const [row] = await db
+    .select({
+      requestedAt: organizations.deletionRequestedAt,
+      requestedBy: organizations.deletionRequestedBy,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, ctx.user.organizationId))
+    .limit(1);
+  if (!row || !row.requestedAt) {
+    return { requested: false, requestedAt: null, undoBy: null, requestedByName: null };
+  }
+  let requestedByName: string | null = null;
+  if (row.requestedBy) {
+    const [u] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, row.requestedBy))
+      .limit(1);
+    requestedByName = u?.name ?? null;
+  }
+  return {
+    requested: true,
+    requestedAt: row.requestedAt.toISOString(),
+    undoBy: new Date(row.requestedAt.getTime() + DELETION_UNDO_WINDOW_MS).toISOString(),
+    requestedByName,
+  };
+}
+
+/**
+ * Request deletion: double-confirm (exact org name), then a 7-day undo
+ * window before the purge sweep deletes anything. Nothing is deleted here.
+ */
+export async function requestOrganizationDeletion(
+  ctx: AuthContext,
+  confirm: string,
+): Promise<{ undoBy: string }> {
+  const [org] = await db
+    .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+    .from(organizations)
+    .where(eq(organizations.id, ctx.user.organizationId))
+    .limit(1);
+  if (!org) throw ApiError.notFound("Organization not found");
+  if (confirm.trim() !== org.name) {
+    throw ApiError.badRequest(`Type \"${org.name}\" exactly to confirm deletion`);
+  }
+  await db
+    .update(organizations)
+    .set({
+      deletionRequestedAt: new Date(),
+      deletionRequestedBy: ctx.user.id,
+      deletionConfirmText: confirm.trim(),
+    })
+    .where(eq(organizations.id, org.id));
   await audit({
-    organizationId: null, // survives after the tenant is gone
+    organizationId: org.id,
     actorUserId: ctx.user.id,
-    action: "ORG_DELETED",
+    action: "ORG_DELETION_REQUESTED",
     entityType: "organization",
     entityId: org.id,
-    metadata: { name: org.name, slug: org.slug },
+    newValue: { undoWindowDays: 7 },
   });
+  return { undoBy: new Date(Date.now() + DELETION_UNDO_WINDOW_MS).toISOString() };
+}
 
-  return { deleted: org.id };
+/** Cancel a pending deletion request (any admin of the org). */
+export async function cancelOrganizationDeletion(ctx: AuthContext): Promise<void> {
+  await db
+    .update(organizations)
+    .set({ deletionRequestedAt: null, deletionRequestedBy: null, deletionConfirmText: null })
+    .where(eq(organizations.id, ctx.user.organizationId));
+  await audit({
+    organizationId: ctx.user.organizationId,
+    actorUserId: ctx.user.id,
+    action: "ORG_DELETION_CANCELLED",
+    entityType: "organization",
+    entityId: ctx.user.organizationId,
+  });
+}
+
+/**
+ * Purge tenants whose deletion request passed the 7-day undo window.
+ * Runs in the jobs worker (`deletion_sweep`); idempotent.
+ */
+export async function purgeDueDeletions(now: Date = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - DELETION_UNDO_WINDOW_MS);
+  const due = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(and(eq(organizations.status, "active"), sql`${organizations.deletionRequestedAt} < ${cutoff}`))
+    .limit(100);
+  let purged = 0;
+  for (const org of due) {
+    await deleteOrganizationData(org.id, org.name);
+    purged += 1;
+  }
+  return purged;
 }
 
 /**
