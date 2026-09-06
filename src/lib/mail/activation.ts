@@ -31,6 +31,48 @@ export async function sendInviteEmail(input: {
   }
 }
 
+/** Phase 1 — invite link, no password in the mailbox. */
+export async function sendInviteLinkEmail(input: {
+  to: string;
+  orgName: string;
+  inviterName: string;
+  acceptUrl: string;
+}): Promise<void> {
+  if (!mailerConfigured()) return;
+  try {
+    await sendEmail(
+      input.to,
+      `Join ${input.orgName} on Wamiro`,
+      renderBrandedEmail({
+        title: `You're invited to ${input.orgName}`,
+        body: `${input.inviterName} invited you to your company's Wamiro workspace. This link expires in 7 days and can be used once.`,
+        actionLabel: "Set your password and join",
+        actionUrl: input.acceptUrl,
+      }),
+    );
+  } catch (e) {
+    console.error(JSON.stringify({ level: "error", msg: "invite_link_email_failed", err: String(e) }));
+  }
+}
+
+export async function sendPasswordResetEmail(input: { to: string; resetUrl: string }): Promise<void> {
+  if (!mailerConfigured()) return;
+  try {
+    await sendEmail(
+      input.to,
+      "Reset your Wamiro password",
+      renderBrandedEmail({
+        title: "Reset your password",
+        body: "Use this link within 30 minutes to choose a new password. If you did not ask for this, you can ignore the email.",
+        actionLabel: "Choose a new password",
+        actionUrl: input.resetUrl,
+      }),
+    );
+  } catch (e) {
+    console.error(JSON.stringify({ level: "error", msg: "password_reset_email_failed", err: String(e) }));
+  }
+}
+
 /** Sent to the registering admin right after their company is provisioned. */
 export async function sendWelcomeEmail(input: {
   to: string;

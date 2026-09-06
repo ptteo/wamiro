@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 import type { RequestTypeField } from "@/db/schema";
-import { Avatar, Badge, btn, input as inputCls } from "./ui";
+import { Avatar, Badge, EmptyState, btn, input as inputCls } from "./ui";
 import { cx } from "@/lib/cx";
 
 // ── Types ───────────────────────────────────────────────────────
@@ -256,13 +256,18 @@ export function RequestsListClient({
           {types.length > 0 ? (
             <button
               type="button"
+              data-tour="requests-new"
               onClick={() => setDrawerTypeId(types[0]?.id ?? null)}
               className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-on-brand transition hover:bg-brand-hover"
             >
               <Plus className="h-3.5 w-3.5" />
               New request
             </button>
-          ) : null}
+          ) : (
+            <span data-tour="requests-new" className="sr-only">
+              New request
+            </span>
+          )}
         </div>
       </div>
 
@@ -560,20 +565,20 @@ function RequestsEmpty({
     hint = "Good news — nothing's been turned down.";
   }
   return (
-    <div className="rounded-lg border border-dashed border-border-default bg-surface px-6 py-10 text-center">
-      <Inbox className="mx-auto h-6 w-6 text-tertiary" />
-      <p className="mt-2 text-sm font-medium text-primary">{title}</p>
-      <p className="mt-1 text-xs text-tertiary">{hint}</p>
-      {hasTypes && !q ? (
-        <button
-          type="button"
-          onClick={onCreate}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-on-brand transition hover:bg-brand-hover"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New request
-        </button>
-      ) : null}
+    <div className="rounded-lg border border-dashed border-border-default bg-surface">
+      <EmptyState
+        title={title}
+        hint={hint}
+        icon={<Inbox className="h-5 w-5" />}
+        action={
+          hasTypes && !q ? (
+            <button type="button" onClick={onCreate} className={`${btn.primary} ${btn.small} mt-3`}>
+              <Plus className="h-3.5 w-3.5" />
+              New request
+            </button>
+          ) : undefined
+        }
+      />
     </div>
   );
 }

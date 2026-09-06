@@ -5,8 +5,12 @@ engineering help.
 
 ## Users
 
-- **Invite**: Admin → Access Control → "Invite user". They receive an email
-  with a temporary password (shown once to you).
+- **Invite**: Admin → Users or People → "Invite teammate". They get a 7-day
+  link to set their own password (no password in email). If SMTP is off, copy
+  the link from the confirmation. Managers can invite people onto their own
+  team. Bulk CSV import is on Access Control (`name,email,role,manager_email`).
+  `?legacy=1` on the admin invite API still returns a one-time password for
+  one release.
 - **Suspend / reactivate**: user detail page (`/admin/users/:id`). Suspension
   immediately revokes all their sessions and blocks sign-in.
 - **Sessions**: see every active session per user; revoke one device or all.
@@ -48,9 +52,12 @@ construction.
 
 ## Integrations
 
-Frappe HR sync pulls the employee master into the directory. Status and last
-sync are on the Admin home page. A failed sync leaves existing data intact —
-fix credentials and retry.
+People, attendance, leave, payroll, and helpdesk are native Wamiro modules —
+there is no Frappe HR or Zammad dependency. Optional connections:
+
+- **SMTP** — invitations and notifications (`SMTP_URL`)
+- **SSO / SCIM** — `/admin/security` when the org uses an identity provider
+- **Email-to-ticket** — IMAP mailbox under Support settings (`SECRET_KEY` required in production)
 
 ## Backups & recovery
 

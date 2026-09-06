@@ -14,6 +14,7 @@ import { can, widestScope } from "@/modules/iam/engine";
 
 // ---------- types ----------
 
+/** Active types for the employee form. Approval `steps` override `approverMode` at submit time (`review`); not listed here. */
 export async function listTypes(ctx: AuthContext) {
   return db
     .select({

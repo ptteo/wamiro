@@ -7,10 +7,14 @@ import {
   Building2,
   ChevronDown,
   ChevronUp,
+  CircleHelp,
   CreditCard,
   LogOut,
+  RotateCcw,
   Shield,
 } from "lucide-react";
+
+import { replayTour } from "@/components/product-tour";
 
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -68,6 +72,29 @@ function SidebarLink({
   );
 }
 
+function OrgMark({ name, color, logoUrl }: { name: string; color: string; logoUrl: string | null }) {
+  const [broken, setBroken] = useState(false);
+  if (logoUrl && !broken) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- tenant logo from our API
+      <img
+        src="/api/v1/org/branding/logo"
+        alt=""
+        className="h-8 w-8 shrink-0 rounded-md object-cover"
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+  return (
+    <span
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[13px] font-bold text-white"
+      style={{ background: color }}
+    >
+      {name.slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
+
 function initials(name: string) {
   return name
     .split(/\s+/)
@@ -106,21 +133,7 @@ export function WorkspaceSidebar({
   return (
     <>
       <Link href="/home" className="flex min-w-0 items-center gap-2.5 rounded-lg px-1 py-0.5 hover:bg-surface-hover">
-        {org.logoUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element -- tenant logo from our API
-          <img
-            src="/api/v1/org/branding/logo"
-            alt=""
-            className="h-8 w-8 shrink-0 rounded-md object-cover"
-          />
-        ) : (
-          <span
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[13px] font-bold text-white"
-            style={{ background: org.primaryColor }}
-          >
-            {org.name.slice(0, 1).toUpperCase()}
-          </span>
-        )}
+        <OrgMark name={org.name} color={org.primaryColor} logoUrl={org.logoUrl} />
         <span className="min-w-0">
           <span className="block truncate text-[13px] font-semibold tracking-tight text-primary">
             {org.name}
@@ -306,6 +319,27 @@ function AccountMenu({
           <p className="truncate px-3 py-2 text-[11px] text-tertiary" title={user.email}>
             {user.email}
           </p>
+          <Link
+            href="/help"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="flex h-9 items-center gap-2 px-3 text-[13px] font-medium text-primary hover:bg-surface-hover"
+          >
+            <CircleHelp className="h-4 w-4" strokeWidth={1.75} />
+            Help
+          </Link>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              replayTour();
+            }}
+            className="flex h-9 w-full items-center gap-2 px-3 text-[13px] font-medium text-primary hover:bg-surface-hover"
+          >
+            <RotateCcw className="h-4 w-4" strokeWidth={1.75} />
+            Replay tour
+          </button>
           <Link
             href="/settings/organization"
             role="menuitem"

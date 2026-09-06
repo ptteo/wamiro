@@ -23,7 +23,7 @@ export const POST = route(
     // (100-company programs) is possible — default stays conservative.
     await enforceRateLimit(
       "ip",
-      `register:${req.headers.get("x-forwarded-for") ?? "local"}`,
+      `register:${req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local"}`,
       { limit: Number(process.env.REGISTER_RATE_LIMIT_PER_HOUR ?? 20), windowSeconds: 3600 },
     );
 
@@ -60,7 +60,7 @@ export const POST = route(
     // Activation (Phase A): nudge the admin into setup when email is wired.
     void sendWelcomeEmail({ to: email, orgName: companyName, adminName }).catch(() => {});
 
-    const res = NextResponse.json({ ok: true, redirect: "/home" }, { status: 201 });
+    const res = NextResponse.json({ ok: true, redirect: "/setup" }, { status: 201 });
     res.cookies.set(SESSION_COOKIE, session.token, cookieOptions(session.expiresAt));
     return res;
   },

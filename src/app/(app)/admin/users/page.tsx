@@ -43,7 +43,7 @@ export default async function AdminUsersPage() {
         subtitle={`Users, role assignment and temporary permissions for ${ctx.org.name}.`}
       />
       <p className="text-[11px] text-tertiary">
-        Invites return a one-time password once. Overrides are audited and can expire.
+        Invites send a 7-day link — they set their own password. Overrides are audited and can expire.
       </p>
       <AdminUsersClient
         users={users.map((u) => ({

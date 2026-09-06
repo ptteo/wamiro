@@ -25,6 +25,7 @@ import * as reqSvc from "@/modules/requests/service";
 import * as knowSvc from "@/modules/knowledge/service";
 import * as annSvc from "@/modules/announcements/service";
 import { overview } from "@/modules/analytics/service";
+import { createPlatformSupportTicket, searchHelp } from "@/modules/help/service";
 
 export type Sensitivity = "internal" | "confidential";
 
@@ -137,6 +138,11 @@ const WorkforceOverviewOut = z.object({
   pendingApprovals: z.number(),
   approvalLatencyHours: z.number(),
 });
+const HelpSearchOut = z.object({
+  curated: z.array(z.object({ id: z.string(), title: z.string(), body: z.string(), href: z.string() })),
+  knowledge: z.array(z.object({ id: z.string(), title: z.string(), snippet: z.string() })),
+});
+const SupportTicketOut = z.object({ id: z.string() });
 
 // ---------- the registry ----------
 
@@ -304,6 +310,54 @@ export const TOOLS: ToolDef[] = [
         pendingApprovals: o.pendingApprovals,
         approvalLatencyHours: o.approvalLatencyHours,
       };
+    },
+  }),
+  tool({
+    name: "help_search",
+    description:
+      "Search curated Wamiro help (clock in, leave, tickets) and compose with the company knowledge base. Use this for how-to questions.",
+    permission: "knowledge.view",
+    sensitivity: "internal",
+    visibility: "self",
+    prefetchable: false,
+    parameters: z.object({ query: z.string().min(2).max(100) }),
+    outputSchema: HelpSearchOut,
+    defaultEnabled: true,
+    execute: async (ctx, args) => {
+      const { query } = args as { query: string };
+      const { curated, knowledge } = await searchHelp(ctx, query);
+      return {
+        curated: curated.map((a) => ({
+          id: a.id,
+          title: a.title,
+          body: capText(a.body, 280),
+          href: a.href,
+        })),
+        knowledge: knowledge.map((k) => {
+          const { safe } = fenceSnippet(k.snippet);
+          return { id: k.id, title: k.title, snippet: capText(safe, 220) };
+        }),
+      };
+    },
+  }),
+  tool({
+    name: "create_support_ticket",
+    description:
+      "Create a Wamiro platform support ticket (not the company's IT queue) when the user needs product help.",
+    permission: "tickets.create",
+    sensitivity: "internal",
+    visibility: "self",
+    prefetchable: false,
+    parameters: z.object({
+      title: z.string().min(3).max(300),
+      description: z.string().min(5).max(10_000),
+    }),
+    outputSchema: SupportTicketOut,
+    defaultEnabled: true,
+    execute: async (ctx, args) => {
+      const { title, description } = args as { title: string; description: string };
+      const row = await createPlatformSupportTicket(ctx, { title, description });
+      return { id: row.id };
     },
   }),
 ];

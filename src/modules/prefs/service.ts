@@ -22,6 +22,8 @@ const ALLOWED_KEYS = new Set([
   "emailPrefs",
   "accessibilityPrefs",
   "dashboardLayout",
+  "tourState",
+  "roleChecklist",
 ]);
 
 export async function getMergedPreferences(userId: string, orgId: string) {

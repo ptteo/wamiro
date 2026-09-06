@@ -116,6 +116,14 @@ test(
         .insert(schema.leaveTypes)
         .values({ organizationId: A.orgId, name: "Annual", annualQuotaDays: "10" })
         .returning({ id: schema.leaveTypes.id });
+      await db.insert(schema.leaveBalances).values({
+        organizationId: A.orgId,
+        userId: A.employeeId,
+        leaveTypeId: leaveTypeA!.id,
+        year: new Date().getFullYear(),
+        entitledDays: "10",
+        usedDays: "0",
+      });
 
       const ctxEmpA = await ctxFor(A.employeeId);
       const ctxMgrA = await ctxFor(A.managerId);
@@ -164,6 +172,101 @@ test(
       const balA = await leaveSvc.myBalances(ctxEmpA);
       const annual = balA.find((b) => b.leaveTypeId === leaveTypeA!.id);
       assert.equal(Number(annual?.usedDays ?? 0), 2, "approved days deducted in A");
+
+      // --- leave cancel: withdraw / request / approve / force / isolation ---
+      await assert.rejects(
+        () => leaveSvc.cancelLeave(ctxMgrB, req.id, { force: true, note: "nope" }),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "cross-tenant force-cancel is not-found",
+      );
+      await assert.rejects(
+        () => leaveSvc.cancelLeave(ctxMgrB, req.id),
+        (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404),
+        "cross-tenant self-cancel is forbidden or not-found",
+      );
+
+      await leaveSvc.cancelLeave(ctxEmpA, req.id);
+      const queueCancel = await leaveSvc.pendingForApprover(ctxMgrA);
+      assert.ok(
+        queueCancel.some((r) => r.id === req.id && r.kind === "cancel"),
+        "manager sees the cancel request",
+      );
+      assert.equal((await leaveSvc.pendingForApprover(ctxMgrB)).length, 0, "B does not see A's cancel request");
+
+      await leaveSvc.review(ctxMgrA, req.id, "rejected", "still needed");
+      assert.equal(
+        Number((await leaveSvc.myBalances(ctxEmpA)).find((b) => b.leaveTypeId === leaveTypeA!.id)?.usedDays ?? 0),
+        2,
+        "rejecting cancel keeps the deduction",
+      );
+
+      await leaveSvc.cancelLeave(ctxEmpA, req.id);
+      await leaveSvc.review(ctxMgrA, req.id, "approved");
+      assert.equal(
+        Number((await leaveSvc.myBalances(ctxEmpA)).find((b) => b.leaveTypeId === leaveTypeA!.id)?.usedDays ?? 0),
+        0,
+        "approving cancel restores the balance",
+      );
+
+      const pending = await leaveSvc.apply(ctxEmpA, {
+        leaveTypeId: leaveTypeA!.id,
+        startDate: tomorrow,
+        endDate: tomorrow,
+      });
+      await leaveSvc.cancelLeave(ctxEmpA, pending.id);
+      const withdrawn = (await leaveSvc.myRequests(ctxEmpA)).find((r) => r.id === pending.id);
+      assert.equal(withdrawn?.status, "cancelled", "pending leave withdraws immediately");
+      assert.equal(
+        Number((await leaveSvc.myBalances(ctxEmpA)).find((b) => b.leaveTypeId === leaveTypeA!.id)?.usedDays ?? 0),
+        0,
+        "withdrawn pending leave never deducted",
+      );
+
+      const toForce = await leaveSvc.apply(ctxEmpA, {
+        leaveTypeId: leaveTypeA!.id,
+        startDate: tomorrow,
+        endDate: dayAfter,
+      });
+      await leaveSvc.review(ctxMgrA, toForce.id, "approved");
+      await assert.rejects(
+        () => leaveSvc.cancelLeave(ctxMgrA, toForce.id, { force: true }),
+        (e: unknown) => e instanceof ApiError && e.status === 400,
+        "force-cancel requires a note",
+      );
+      const ctxLeaveAdminA = await ctxFor(A.adminId);
+      await leaveSvc.cancelLeave(ctxLeaveAdminA, toForce.id, { force: true, note: "Coverage needed" });
+      assert.equal(
+        Number((await leaveSvc.myBalances(ctxEmpA)).find((b) => b.leaveTypeId === leaveTypeA!.id)?.usedDays ?? 0),
+        0,
+        "admin force-cancel restores the balance",
+      );
+
+      const pastEnd = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+      const pastStart = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+      const endedLeave = await leaveSvc.apply(ctxEmpA, {
+        leaveTypeId: leaveTypeA!.id,
+        startDate: pastStart,
+        endDate: pastEnd,
+      });
+      await leaveSvc.review(ctxMgrA, endedLeave.id, "approved");
+      await assert.rejects(
+        () => leaveSvc.cancelLeave(ctxEmpA, endedLeave.id),
+        (e: unknown) => e instanceof ApiError && e.status === 409,
+        "employee cannot request cancel after the leave ended",
+      );
+      await leaveSvc.cancelLeave(ctxLeaveAdminA, endedLeave.id, { force: true, note: "Entered in error" });
+
+      const rejected = await leaveSvc.apply(ctxEmpA, {
+        leaveTypeId: leaveTypeA!.id,
+        startDate: tomorrow,
+        endDate: tomorrow,
+      });
+      await leaveSvc.review(ctxMgrA, rejected.id, "rejected");
+      await assert.rejects(
+        () => leaveSvc.cancelLeave(ctxEmpA, rejected.id),
+        (e: unknown) => e instanceof ApiError && e.status === 409,
+        "rejected leave has no cancel path",
+      );
 
       // --- search isolation ---
       const hitsA = await searchSvc.search(ctxMgrA, "employee");
@@ -1116,6 +1219,7 @@ test(
         email: `fit-${suffix}@iso.test`,
         roleKey: "employee",
       });
+      userIds.push(overInvite.userId);
       assert.ok(overInvite.userId, "invite works once capacity allows");
 
       // Lifecycle: one tenant's billing state never leaks into another's view.
@@ -1238,7 +1342,211 @@ test(
       );
       await db.delete(schema.rateLimitHits).where(eq(schema.rateLimitHits.key, rlKey));
 
-      console.log("isolation suite passed: directory/attendance/leave/search/admin/overrides/requests/documents/knowledge/analytics/work/admin-detail/admin-sessions/admin-audit/tickets/announcements/attachments/catalog/it-records/groups/mailboxes/shifts/corrections/encashment/hr-documents/holidays/payroll/advances/analytics-reports/billing/domains/push/ratelimit all tenant-scoped");
+      // ------------------------------------------------------------------
+      // Phase 1: invitation tokens, domain lock, manager scope, lockout
+      // ------------------------------------------------------------------
+      const inviteSvc = await import("@/modules/invitations/service");
+      const pwSvc = await import("@/modules/auth/passwords");
+
+      const tokenInvite = await inviteSvc.createInvitation(ctxAdminA, {
+        name: "Token Join",
+        email: `token-${suffix}@iso.test`,
+        roleKey: "employee",
+      });
+      userIds.push(tokenInvite.userId);
+      assert.ok(tokenInvite.inviteUrl, "new invites return a link, not a password");
+      const rawToken = new URL(tokenInvite.inviteUrl!, "http://localhost").searchParams.get("token");
+      assert.ok(rawToken);
+      const peeked = await inviteSvc.peekInvitation(rawToken!);
+      assert.equal(peeked.email, `token-${suffix}@iso.test`);
+      await inviteSvc.acceptInvitation(rawToken!, { password: "Iso-Accept-99" });
+      await assert.rejects(
+        () => inviteSvc.acceptInvitation(rawToken!, { password: "Iso-Accept-99" }),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "invite token is single-use",
+      );
+      await assert.rejects(
+        () => inviteSvc.peekInvitation("not-a-real-token"),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "unknown token is not found",
+      );
+      await assert.rejects(
+        () => inviteSvc.resendInvitation(ctxAdminB, tokenInvite.inviteId),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "cross-org cannot resend another tenant's invite",
+      );
+
+      await assert.rejects(
+        () =>
+          inviteSvc.createInvitation(ctxMgrA, {
+            name: "Priv",
+            email: `priv-${suffix}@iso.test`,
+            roleKey: "admin",
+          }),
+        /Managers can only invite|Missing permission/i,
+        "manager cannot invite privileged roles",
+      );
+      await assert.rejects(
+        () =>
+          inviteSvc.createInvitation(ctxMgrA, {
+            name: "Outside",
+            email: `out-${suffix}@iso.test`,
+            roleKey: "employee",
+            managerUserId: A.adminId,
+          }),
+        /report to you/i,
+        "manager cannot invite onto someone else's line",
+      );
+      const teamInvite = await inviteSvc.createInvitation(ctxMgrA, {
+        name: "Report",
+        email: `report-${suffix}@iso.test`,
+        roleKey: "employee",
+      });
+      userIds.push(teamInvite.userId);
+      const [empRow] = await db
+        .select({ managerUserId: schema.employees.managerUserId })
+        .from(schema.employees)
+        .where(eq(schema.employees.userId, teamInvite.userId));
+      assert.equal(empRow?.managerUserId, A.managerId, "team invite reports to the inviting manager");
+
+      await db
+        .update(schema.organizations)
+        .set({ allowedEmailDomains: ["howdy.com"] })
+        .where(eq(schema.organizations.id, A.orgId));
+      await assert.rejects(
+        () =>
+          inviteSvc.createInvitation(ctxAdminA, {
+            name: "Wrong Domain",
+            email: `wrong-${suffix}@iso.test`,
+            roleKey: "employee",
+          }),
+        /email domains/i,
+        "domain lock rejects off-domain invites",
+      );
+      await db
+        .update(schema.organizations)
+        .set({ allowedEmailDomains: [] })
+        .where(eq(schema.organizations.id, A.orgId));
+
+      const lockEmail = `lock-${suffix}@iso.test`;
+      const [lockUser] = await db
+        .insert(schema.users)
+        .values({
+          organizationId: A.orgId,
+          email: lockEmail,
+          name: "Lock Me",
+          passwordHash,
+          status: "active",
+        })
+        .returning({ id: schema.users.id });
+      userIds.push(lockUser!.id);
+      for (let i = 0; i < 10; i++) {
+        await pwSvc.recordFailedLogin(lockUser!.id, lockEmail, A.orgId);
+      }
+      await assert.rejects(
+        () => pwSvc.recordFailedLogin(lockUser!.id, lockEmail, A.orgId),
+        /locked/i,
+        "11th failed login locks the account",
+      );
+      const [locked] = await db
+        .select({ lockedUntil: schema.users.lockedUntil })
+        .from(schema.users)
+        .where(eq(schema.users.id, lockUser!.id));
+      assert.ok(pwSvc.isLocked(locked?.lockedUntil), "lockedUntil is set after the burst");
+
+      // ------------------------------------------------------------------
+      // Phase 2: demo seed/purge, help ticket, tour prefs, invite landing
+      // ------------------------------------------------------------------
+      const demoSvc = await import("@/modules/onboarding/demo");
+      const helpSvc = await import("@/modules/help/service");
+      const ticketSvc = await import("@/modules/tickets/service");
+      const prefsSvc = await import("@/modules/prefs/service");
+
+      const seededA = await demoSvc.seedDemo(ctxAdminA);
+      assert.equal(seededA.projects, 1);
+      const seededB = await demoSvc.seedDemo(ctxAdminB);
+      assert.equal(seededB.projects, 1);
+      const demoA = await db
+        .select({ id: schema.projects.id, org: schema.projects.organizationId })
+        .from(schema.projects)
+        .where(and(eq(schema.projects.organizationId, A.orgId), eq(schema.projects.demo, true)));
+      const demoB = await db
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(and(eq(schema.projects.organizationId, B.orgId), eq(schema.projects.demo, true)));
+      assert.equal(demoA.length, 1);
+      assert.equal(demoB.length, 1);
+      assert.notEqual(demoA[0]?.id, demoB[0]?.id);
+      const purgedA = await demoSvc.purgeDemo(ctxAdminA);
+      assert.ok(purgedA.projects >= 1);
+      const demoAAfter = await db
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(and(eq(schema.projects.organizationId, A.orgId), eq(schema.projects.demo, true)));
+      const demoBAfter = await db
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(and(eq(schema.projects.organizationId, B.orgId), eq(schema.projects.demo, true)));
+      assert.equal(demoAAfter.length, 0, "purge is org-scoped");
+      assert.equal(demoBAfter.length, 1, "B demo rows survive A's purge");
+
+      const helpTicket = await helpSvc.createPlatformSupportTicket(ctxAdminA, {
+        title: "Iso platform help",
+        description: "Need a hand proving isolation.",
+      });
+      const helpTicketsA = await ticketSvc.listTickets(ctxAdminA);
+      const helpTicketsB = await ticketSvc.listTickets(ctxAdminB);
+      assert.equal(helpTicketsA.some((t) => t.id === helpTicket.id), true);
+      assert.equal(helpTicketsB.some((t) => t.id === helpTicket.id), false, "B cannot see A's help ticket");
+      const [helpRow] = await db
+        .select({ category: schema.tickets.category, org: schema.tickets.organizationId })
+        .from(schema.tickets)
+        .where(eq(schema.tickets.id, helpTicket.id));
+      assert.equal(helpRow?.category, "platform");
+      assert.equal(helpRow?.org, A.orgId);
+
+      await prefsSvc.setPreference(ctxAdminA, {
+        key: "tourState",
+        orgScoped: true,
+        value: { home: { v: 1, doneAt: "2026-01-01T00:00:00.000Z" } },
+      });
+      const prefsA = await prefsSvc.getMergedPreferences(A.adminId, A.orgId);
+      const prefsB = await prefsSvc.getMergedPreferences(B.adminId, B.orgId);
+      assert.ok((prefsA.tourState as { home?: { v?: number } } | undefined)?.home?.v === 1);
+      assert.equal(prefsB.tourState, undefined, "tour prefs do not cross tenants");
+
+      await db
+        .update(schema.organizations)
+        .set({ onboardingState: "pending" })
+        .where(eq(schema.organizations.id, A.orgId));
+      const landEmp = await inviteSvc.createInvitation(ctxAdminA, {
+        name: "Land Home",
+        email: `land-home-${suffix}@iso.test`,
+        roleKey: "employee",
+      });
+      userIds.push(landEmp.userId);
+      const landEmpTok = new URL(landEmp.inviteUrl!, "http://localhost").searchParams.get("token");
+      const landEmpAcc = await inviteSvc.acceptInvitation(landEmpTok!, { password: "Iso-Accept-99" });
+      assert.equal(landEmpAcc.redirect, "/home", "employees never land on /setup");
+      const landAdm = await inviteSvc.createInvitation(ctxAdminA, {
+        name: "Land Setup",
+        email: `land-setup-${suffix}@iso.test`,
+        roleKey: "admin",
+      });
+      userIds.push(landAdm.userId);
+      const landAdmTok = new URL(landAdm.inviteUrl!, "http://localhost").searchParams.get("token");
+      const landAdmAcc = await inviteSvc.acceptInvitation(landAdmTok!, { password: "Iso-Accept-99" });
+      assert.equal(landAdmAcc.redirect, "/setup", "setup admins land on /setup when org is incomplete");
+      await db
+        .update(schema.organizations)
+        .set({ onboardingState: "complete" })
+        .where(eq(schema.organizations.id, A.orgId));
+      const landEmpCtx = await ctxFor(landEmp.userId);
+      await attSvc.clockToggle(landEmpCtx);
+      const landOpen = await attSvc.getOpenRecord(landEmpCtx);
+      assert.ok(landOpen, "invite → accept → clock in is the Phase 2 path");
+
+      console.log("isolation suite passed: directory/attendance/leave/leave-cancel/search/admin/overrides/requests/documents/knowledge/analytics/work/admin-detail/admin-sessions/admin-audit/tickets/announcements/attachments/catalog/it-records/groups/mailboxes/shifts/corrections/encashment/hr-documents/holidays/payroll/advances/analytics-reports/billing/domains/push/ratelimit/invites/lockout/demo/help/tour-prefs all tenant-scoped");
     } finally {
       // cleanup test tenants (users first — FK default is restrict)
       if (userIds.length) {

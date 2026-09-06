@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AdminSection } from "./admin-ui";
+import { InviteResult } from "./invite-teammate";
 import { Avatar, Badge, EmptyState, btn, input, statusTone } from "./ui";
 
 interface UserRow {
@@ -50,7 +51,12 @@ export function AdminUsersClient({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [invited, setInvited] = useState<{ email: string; tempPassword: string } | null>(null);
+  const [invited, setInvited] = useState<{
+    email: string;
+    tempPassword?: string;
+    inviteUrl?: string;
+    linked?: boolean;
+  } | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "suspended" | "invited">("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
@@ -78,6 +84,8 @@ export function AdminUsersClient({
         ok?: boolean;
         error?: { message?: string };
         tempPassword?: string;
+        inviteUrl?: string;
+        linked?: boolean;
       };
       if (!res.ok) {
         setError(data.error?.message ?? `Request failed (${res.status})`);
@@ -98,17 +106,26 @@ export function AdminUsersClient({
         </p>
       ) : null}
       {invited ? (
-        <div role="status" className="rounded-md border border-success/30 bg-success-subtle px-4 py-3 text-sm text-success">
-          <p className="font-medium">{invited.email} invited.</p>
-          <p className="mt-1">
-            One-time password (shown only now):{" "}
-            <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-primary">{invited.tempPassword}</code>{" "}
-            — share it securely; they should change it after first sign-in.
-          </p>
-        </div>
+        invited.tempPassword ? (
+          <div role="status" className="rounded-md border border-success/30 bg-success-subtle px-4 py-3 text-sm text-success">
+            <p className="font-medium">{invited.email} invited.</p>
+            <p className="mt-1">
+              One-time password (legacy, shown only now):{" "}
+              <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-primary">{invited.tempPassword}</code>
+            </p>
+          </div>
+        ) : (
+          <InviteResult email={invited.email} inviteUrl={invited.inviteUrl} linked={invited.linked} />
+        )
       ) : null}
 
-      {canManageUsers ? <InviteForm roles={roles} busy={busy} onInvite={(r) => setInvited(r)} call={call} /> : null}
+      {canManageUsers ? (
+        <>
+          <InviteForm roles={roles} busy={busy} onInvite={(r) => setInvited(r)} call={call} />
+          <PendingInvites />
+          <CsvImport />
+        </>
+      ) : null}
 
       <AdminSection title={`Users (${filteredUsers.length}${filteredUsers.length === users.length ? "" : ` of ${users.length}`})`}>
         <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -266,7 +283,7 @@ function InviteForm({
 }: {
   roles: RoleRow[];
   busy: boolean;
-  onInvite: (r: { email: string; tempPassword: string }) => void;
+  onInvite: (r: { email: string; tempPassword?: string; inviteUrl?: string; linked?: boolean }) => void;
   call: (url: string, method: string, body: unknown) => Promise<Record<string, unknown> | null>;
 }) {
   const [open, setOpen] = useState(false);
@@ -288,8 +305,13 @@ function InviteForm({
           email: f.get("email"),
           roleKey: f.get("roleKey"),
         });
-        if (res?.ok && typeof res.tempPassword === "string") {
-          onInvite({ email: String(f.get("email")), tempPassword: res.tempPassword });
+        if (res?.ok) {
+          onInvite({
+            email: String(f.get("email")),
+            tempPassword: typeof res.tempPassword === "string" ? res.tempPassword : undefined,
+            inviteUrl: typeof res.inviteUrl === "string" ? res.inviteUrl : undefined,
+            linked: res.linked === true,
+          });
           setOpen(false);
         }
       }}
@@ -426,5 +448,137 @@ function GrantOverrideForm({
         </button>
       </div>
     </form>
+  );
+}
+
+function PendingInvites() {
+  const router = useRouter();
+  const [rows, setRows] = useState<{ id: string; email: string; name: string; roleKey: string; expiresAt: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void fetch("/api/v1/invitations")
+      .then((r) => (r.ok ? r.json() : { invites: [] }))
+      .then((d: { invites?: typeof rows }) => setRows(d.invites ?? []));
+  }, []);
+
+  async function act(id: string, method: "POST" | "DELETE") {
+    setBusy(true);
+    await fetch(`/api/v1/invitations/${id}${method === "POST" ? "?action=resend" : ""}`, { method });
+    const d = (await (await fetch("/api/v1/invitations")).json()) as { invites?: typeof rows };
+    setRows(d.invites ?? []);
+    setBusy(false);
+    router.refresh();
+  }
+
+  if (rows.length === 0) return null;
+  return (
+    <AdminSection title={`Pending invites (${rows.length})`}>
+      <ul className="divide-y divide-border-subtle text-sm">
+        {rows.map((r) => (
+          <li key={r.id} className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              {r.name} · {r.email} · {r.roleKey}
+              <span className="block text-xs text-tertiary">Expires {new Date(r.expiresAt).toLocaleDateString()}</span>
+            </span>
+            <span className="flex gap-2">
+              <button type="button" className={`${btn.secondary} ${btn.small}`} disabled={busy} onClick={() => act(r.id, "POST")}>
+                Resend
+              </button>
+              <button type="button" className={`${btn.danger} ${btn.small}`} disabled={busy} onClick={() => act(r.id, "DELETE")}>
+                Revoke
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </AdminSection>
+  );
+}
+
+function CsvImport() {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [csv, setCsv] = useState("name,email,role,manager_email");
+  const [preview, setPreview] = useState<{
+    preview: { name: string; email: string; roleKey: string; managerEmail: string | null }[];
+    errors: { row: number; email: string; error: string }[];
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(commit: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/v1/admin/users/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv, commit }),
+      });
+      const d = (await res.json()) as {
+        preview?: { name: string; email: string; roleKey: string; managerEmail: string | null }[];
+        errors?: { row: number; email: string; error: string }[];
+        error?: { message?: string };
+      };
+      if (!res.ok) {
+        setError(d.error?.message ?? "Import failed");
+        if (d.errors) setPreview({ preview: [], errors: d.errors });
+        return;
+      }
+      if (commit) {
+        setPreview(null);
+        setOpen(false);
+        router.refresh();
+        return;
+      }
+      setPreview({ preview: d.preview ?? [], errors: d.errors ?? [] });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className={`${btn.secondary} w-full sm:w-auto`} onClick={() => setOpen(true)}>
+        Bulk import CSV
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-lg border border-border-subtle bg-surface p-4">
+      <p className="text-sm font-medium">Bulk invite (CSV)</p>
+      <p className="text-xs text-tertiary">Columns: name, email, role, manager_email. Dry-run first. Max 1,000 rows.</p>
+      <textarea className={`${input} min-h-28 font-mono text-xs`} value={csv} onChange={(e) => setCsv(e.target.value)} />
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
+      {preview ? (
+        <div className="text-xs">
+          <p className="text-secondary">
+            {preview.preview.length} ready · {preview.errors.length} errors
+          </p>
+          {preview.errors.slice(0, 8).map((e) => (
+            <p key={`${e.row}-${e.email}`} className="text-danger">
+              Row {e.row} {e.email}: {e.error}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={btn.secondary} disabled={busy} onClick={() => run(false)}>
+          {busy ? "Checking…" : "Dry-run"}
+        </button>
+        <button
+          type="button"
+          className={btn.primary}
+          disabled={busy || !preview || preview.errors.length > 0 || preview.preview.length === 0}
+          onClick={() => run(true)}
+        >
+          Commit invites
+        </button>
+        <button type="button" className={btn.secondary} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }

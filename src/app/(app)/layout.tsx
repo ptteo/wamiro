@@ -1,6 +1,7 @@
-import Link from "next/link";
 import { cookies } from "next/headers";
 
+import { AppGates } from "@/components/app-gates";
+import { TourMount } from "@/components/tour-mount";
 import { ImpersonationBanner } from "@/components/impersonation-banner";
 import { LogoutButton } from "@/components/logout-button";
 import {
@@ -27,6 +28,7 @@ import { eq } from "drizzle-orm";
 import { impersonationSessions, users as usersTable, organizations as orgsTable } from "@/db/schema";
 
 import { OPERATOR_RETURN_COOKIE } from "@/lib/impersonation";
+import { needsMfaSetup, onboardingComplete } from "@/modules/org/policies";
 
 /** Best-effort: identify the impersonation window for banner display. */
 async function impersonationTarget(returnToken: string | null): Promise<boolean> {
@@ -148,7 +150,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
       {/* sidebar — single source of navigation on desktop */}
       <div className="flex h-full">
-        <aside className="hidden w-72 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
+        <aside className="relative z-[90] hidden w-72 shrink-0 flex-col border-r border-border-default bg-surface-subtle px-2.5 py-3 md:flex">
           <WorkspaceSidebar
             workspaces={shellWorkspaces}
             paletteNav={paletteNav}
@@ -168,7 +170,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {/* content */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* mobile top bar: org brand + active workspace + menu disclosure */}
-          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-surface px-4 py-3 md:hidden">
+          <header className="relative z-[90] flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-surface px-4 py-3 md:hidden">
             <span className="flex min-w-0 items-center gap-2">
               <span
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white"
@@ -197,7 +199,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             id="main"
             className="mx-auto flex w-full min-h-0 min-w-0 max-w-5xl flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6 sm:py-8 has-[[data-fill-workspace]]:max-w-none has-[[data-fill-workspace]]:overflow-hidden has-[[data-fill-workspace]]:px-0 has-[[data-fill-workspace]]:py-0"
           >
-            {children}
+            <AppGates
+              mfaRequired={needsMfaSetup(ctx)}
+              onboardingIncomplete={!onboardingComplete(org.onboardingState)}
+            >
+              {children}
+            </AppGates>
+            <TourMount />
           </main>
         </div>
       </div>

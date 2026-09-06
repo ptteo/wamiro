@@ -310,8 +310,9 @@ export function TicketsClient({
 
   return (
     <>
+      {!canCreate ? <span data-tour="tickets-new" className="sr-only" /> : null}
       {canCreate && (
-        <div>
+        <div data-tour="tickets-new">
           <button type="button" className={btn.primary} onClick={() => setCreating((v) => !v)}>
             {creating ? "Cancel" : "New ticket"}
           </button>
@@ -376,7 +377,14 @@ export function TicketsClient({
         {tickets.length === 0 ? (
           <EmptyState
             title="No tickets yet"
-            hint={canManage ? "Submit a support ticket to get started." : "Support tickets will appear here."}
+            hint={canCreate ? "Open a ticket for IT or workplace issues." : "Support tickets will appear here."}
+            action={
+              canCreate ? (
+                <button type="button" className={`${btn.primary} ${btn.small} mt-3`} onClick={() => setCreating(true)}>
+                  New ticket
+                </button>
+              ) : undefined
+            }
           />
         ) : (
           <ul className="divide-y divide-border-default">

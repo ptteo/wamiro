@@ -22,8 +22,11 @@ export const POST = route(
   async (req: NextRequest, { auth }) => {
     const parsed = inviteSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw ApiError.badRequest("Check the form", parsed.error.flatten());
-    const result = await inviteUser(auth, parsed.data);
-    // tempPassword is returned exactly once, to the inviting admin only
+    const result = await inviteUser(auth, {
+      ...parsed.data,
+      // ponytail: ?legacy=1 keeps the temp-password email for one release
+      legacy: req.nextUrl.searchParams.get("legacy") === "1",
+    });
     return NextResponse.json({ ok: true, ...result }, { status: 201 });
   },
   { permission: "users.manage" },

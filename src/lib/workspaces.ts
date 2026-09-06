@@ -14,6 +14,7 @@ import {
   CalendarDays,
   CalendarClock,
   CheckCircle2,
+  CircleHelp,
   ClipboardCheck,
   FileText,
   GraduationCap,
@@ -134,6 +135,7 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
       { label: "Home", href: "/home", icon: Home },
       { label: "Notifications", href: "/notifications", icon: Bell, badge: "unread" },
       { label: "Favorites", href: "/favorites", icon: Star },
+      { label: "Help", href: "/help", icon: CircleHelp },
     ],
   },
   support: {

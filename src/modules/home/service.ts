@@ -152,7 +152,7 @@ export async function homeSummary(ctx: AuthContext): Promise<HomeSummary> {
       and(
         eq(leaveRequests.organizationId, orgId),
         eq(leaveRequests.userId, ctx.user.id),
-        eq(leaveRequests.status, "pending"),
+        inArray(leaveRequests.status, ["pending", "cancel_requested"]),
       ),
     );
 
@@ -165,10 +165,10 @@ export async function homeSummary(ctx: AuthContext): Promise<HomeSummary> {
       .from(leaveRequests)
       .where(
         companyWide
-          ? and(eq(leaveRequests.organizationId, orgId), eq(leaveRequests.status, "pending"))
+          ? and(eq(leaveRequests.organizationId, orgId), inArray(leaveRequests.status, ["pending", "cancel_requested"]))
           : and(
               eq(leaveRequests.organizationId, orgId),
-              eq(leaveRequests.status, "pending"),
+              inArray(leaveRequests.status, ["pending", "cancel_requested"]),
               sql`${leaveRequests.userId} IN (SELECT user_id FROM employees WHERE manager_user_id = ${ctx.user.id})`,
             ),
       );
@@ -261,7 +261,7 @@ export async function homeSummary(ctx: AuthContext): Promise<HomeSummary> {
       .where(
         and(
           eq(leaveRequests.organizationId, orgId),
-          eq(leaveRequests.status, "pending"),
+          inArray(leaveRequests.status, ["pending", "cancel_requested"]),
           sql`${leaveRequests.userId} IN (SELECT user_id FROM employees WHERE manager_user_id = ${ctx.user.id})`,
         ),
       );
@@ -786,7 +786,7 @@ export async function approvalCount(ctx: AuthContext): Promise<number> {
     .where(
       and(
         eq(leaveRequests.organizationId, orgId),
-        eq(leaveRequests.status, "pending"),
+        inArray(leaveRequests.status, ["pending", "cancel_requested"]),
         ...(companyWide
           ? []
           : [sql`${leaveRequests.userId} IN (

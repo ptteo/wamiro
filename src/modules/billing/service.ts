@@ -86,7 +86,7 @@ export async function assertSeatAvailable(ctx: AuthContext): Promise<void> {
   if (seats >= limit) {
     const plan = planOf(org.plan);
     throw ApiError.conflict(
-      `Your ${plan.name} plan allows up to ${limit} people (${limit} currently active). ` +
+      `Your ${plan.name} plan allows up to ${limit} people (${seats} currently active). ` +
         `Ask your platform administrator to upgrade to a larger plan.`,
     );
   }

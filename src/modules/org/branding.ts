@@ -64,6 +64,10 @@ async function locate(
   return null;
 }
 
+export async function hasStoredLogo(orgId: string): Promise<boolean> {
+  return (await locate(orgId)) !== null;
+}
+
 export async function readLogo(
   orgId: string,
 ): Promise<{ data: Buffer; contentType: string } | null> {

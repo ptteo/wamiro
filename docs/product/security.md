@@ -16,7 +16,9 @@ by the automated suites. Anything not listed here is not claimed.
 | Authorization | Central IAM engine: role grants + allow/deny overrides, scopes SELF→GLOBAL, deny > override > role | `src/modules/iam/engine.test.ts` (14 tests) |
 | Tenant isolation | Every business table carries `organization_id`; all queries filter by session org; FK cascades for teardown | `src/tests/isolation.test.ts` (live cross-tenant suite) |
 | SQL injection | Drizzle parameterized queries throughout; no string-built SQL with user input | code review + integration suite |
-| Rate limiting | Login rate limit per IP + per email | login route |
+| Rate limiting | DB-backed fixed windows (`rate_limit_hits`) on login, register, and mutating APIs — shared across instances | `src/lib/ratelimit.ts` |
+| SSO | OIDC + SCIM (org-level); password + TOTP remains the default | `/admin/security`, `src/modules/sso` |
+| Secrets at rest | Mailbox IMAP passwords AES-256-GCM (`SECRET_KEY`); decrypt accepts legacy plaintext | `src/lib/secrets.ts` |
 | Audit trail | Append-only `audit_logs` with actor, action, entity, old/new values, IP, request id; admin UI + CSV export | `/admin/audit` |
 | Error hygiene | API errors return safe codes/messages; stack traces stay server-side; structured logs carry request id + tenant but never secrets | `src/lib/api.ts` |
 | Module gating | Disabled modules remove rail/sidebar entries AND block routes/APIs server-side | `isModuleEnabled` checks |
@@ -29,10 +31,10 @@ through the same audit trail as customers.
 
 ## Known limitations (honest list)
 
-- SSO (SAML/OIDC) is not implemented yet; authentication is password + TOTP.
 - Email verification on invitation depends on SMTP being configured.
-- Rate limiting is per-instance (in-memory); horizontal deployments should
-  front it with a shared limiter at the proxy.
+- Client IP is the first `X-Forwarded-For` hop — firewall port 3000 to Caddy
+  only (see `docs/deploy-lightsail.md` / `docs/deploy-oracle.md`).
+- `SECRET_KEY` is required in production to store new mailbox passwords.
 
 ## Reporting
 

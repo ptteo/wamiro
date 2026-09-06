@@ -215,6 +215,22 @@ export function PlatformClient({
                       <button
                         type="button"
                         disabled={busy === t.id}
+                        onClick={() =>
+                          void act(t.id, () =>
+                            fetch("/api/v1/platform/onboarding", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ organizationId: t.id }),
+                            }),
+                          )
+                        }
+                        className="text-xs text-secondary hover:underline disabled:opacity-50"
+                      >
+                        Force-complete setup
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy === t.id}
                         onClick={() => setStatus(t, t.status === "active" ? "suspended" : "active")}
                         className="rounded-md border border-border-default bg-surface px-2 py-1 text-xs font-medium text-secondary transition hover:bg-surface-hover disabled:opacity-50"
                       >

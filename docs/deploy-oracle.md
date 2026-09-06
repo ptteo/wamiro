@@ -39,10 +39,6 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 # Node 22 (arm64 build installs automatically)
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs caddy git
-
-# Docker (for Zammad; ARM64 images included)
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu
 ```
 
 ## 3. Wamiro (identical to Lightsail flow)
@@ -50,7 +46,7 @@ sudo usermod -aG docker ubuntu
 ```bash
 sudo mkdir -p /opt/wamiro && sudo chown ubuntu:ubuntu /opt/wamiro
 cd /opt/wamiro            # clone repo here
-cp .env.example .env && vi .env   # DATABASE_URL (RDS), APP_URL=https://wamiro.example.com
+cp .env.example .env && vi .env   # DATABASE_URL, APP_URL, SECRET_KEY
 npm ci
 npm run build
 npm run db:migrate:raw    # applies all pending migrations
@@ -66,17 +62,24 @@ After=network.target
 User=ubuntu
 WorkingDirectory=/opt/wamiro
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/npm run start
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1
 Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
 
-Caddy site for the app:
+Caddy site for the app (bind the Node process to loopback; rate limits trust
+the first `X-Forwarded-For` hop, so port 3000 must not be public):
 
 ```
+{
+    servers {
+        trusted_proxies static 127.0.0.1/32
+    }
+}
+
 wamiro.example.com {
-    reverse_proxy localhost:3000
+    reverse_proxy 127.0.0.1:3000
 }
 ```
 

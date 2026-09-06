@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { LayoutGrid, List, Search, UserPlus, X } from "lucide-react";
+import { LayoutGrid, List, Search, X } from "lucide-react";
 
+import { InviteTeammateForm } from "./invite-teammate";
 import { Avatar, EmptyState, StatusDot } from "./ui";
 import { cx } from "@/lib/cx";
 
@@ -382,15 +383,13 @@ function GridView({ people }: { people: DirectoryPerson[] }) {
   );
 }
 
-export function PeopleDirectoryHeaderAction({ canInvite }: { canInvite: boolean }) {
+export function PeopleDirectoryHeaderAction({
+  canInvite,
+  teamOnly = false,
+}: {
+  canInvite: boolean;
+  teamOnly?: boolean;
+}) {
   if (!canInvite) return null;
-  return (
-    <Link
-      href="/admin/users"
-      className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-on-brand transition hover:bg-brand-hover"
-    >
-      <UserPlus className="h-3.5 w-3.5" />
-      Invite teammate
-    </Link>
-  );
+  return <InviteTeammateForm teamOnly={teamOnly} />;
 }

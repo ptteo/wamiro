@@ -49,6 +49,9 @@ export function BrandingClient({ hasLogo, orgName, canManage }: Props) {
             src={`/api/v1/org/branding/logo?v=${Date.now()}`}
             alt={`${orgName} logo`}
             className="h-16 w-16 rounded-xl border border-border-default bg-surface-subtle object-contain"
+            onError={(e) => {
+              e.currentTarget.style.display = "none";
+            }}
           />
         ) : null}
         <p className="text-xs leading-relaxed text-secondary">

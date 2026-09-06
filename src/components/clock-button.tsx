@@ -9,7 +9,7 @@ interface OpenShift {
   clockIn: string | Date;
 }
 
-export function ClockInButton({ openShift }: { openShift: OpenShift | null }) {
+export function ClockInButton({ openShift, tour }: { openShift: OpenShift | null; tour?: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export function ClockInButton({ openShift }: { openShift: OpenShift | null }) {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3" data-tour={tour}>
       <button type="button" onClick={toggle} disabled={busy} className={btn.primary}>
         {busy
           ? "Saving…"

@@ -18,7 +18,7 @@ import {
   Users,
 } from "lucide-react";
 
-import { Avatar } from "./ui";
+import { Avatar, EmptyState, btn } from "./ui";
 import { ClockInButton } from "./clock-button";
 import { cx } from "@/lib/cx";
 
@@ -186,6 +186,7 @@ function NowCard({
 }) {
   return (
     <section
+      id="attendance-clock"
       aria-label="Your status right now"
       className={cx(
         "overflow-hidden rounded-lg border bg-surface",
@@ -228,7 +229,7 @@ function NowCard({
 
         {/* Right: clock in/out button */}
         <div className="flex items-center gap-2 sm:flex-col sm:items-stretch">
-          <ClockInButton openShift={open} />
+          <ClockInButton openShift={open} tour="attendance-clock" />
         </div>
       </div>
 
@@ -389,10 +390,16 @@ function HistoryList({
       </div>
 
       {grouped.length === 0 ? (
-        <div className="px-5 py-8 text-center text-sm text-tertiary">
-          <History className="mx-auto h-6 w-6 text-tertiary" />
-          <p className="mt-2">No records in this range yet.</p>
-        </div>
+        <EmptyState
+          title="No records in this range yet"
+          hint="Clock in when you start your shift — your week builds automatically."
+          icon={<History className="h-5 w-5" />}
+          action={
+            <a href="#attendance-clock" className={`${btn.primary} ${btn.small} mt-3`}>
+              Clock in
+            </a>
+          }
+        />
       ) : (
         <ol className="divide-y divide-border-subtle">
           {grouped.map(([date, rows]) => (

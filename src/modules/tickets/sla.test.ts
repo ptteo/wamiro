@@ -63,14 +63,15 @@ test("open ticket with 25–50% remaining is due_soon (still ok state)", () => {
 });
 
 test("resolved before deadline is ok; resolved late is breached", () => {
-  const onTime = make({ status: "resolved", resolvedAt: new Date(Date.now() - h(2)) });
-  assert.equal(slaStateOf(onTime), "ok");
+  const now = new Date("2026-09-04T12:00:00Z");
+  const onTime = make({ status: "resolved", resolvedAt: new Date(now.getTime() - h(2)) }, now);
+  assert.equal(slaStateOf(onTime, now), "ok");
   const late = make({
     status: "resolved",
-    slaDueDate: new Date(Date.now() - h(5)),
-    resolvedAt: new Date(Date.now() - h(1)),
-  });
-  assert.equal(slaStateOf(late), "breached");
+    slaDueDate: new Date(now.getTime() - h(5)),
+    resolvedAt: new Date(now.getTime() - h(1)),
+  }, now);
+  assert.equal(slaStateOf(late, now), "breached");
 });
 
 test("closed tickets never show breached", () => {

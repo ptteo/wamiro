@@ -8,6 +8,7 @@
  *   - request_escalation   overdue request SLAs → escalate + notify
  *   - governance_sweep     overdue obligations → escalate + notify
  *   - mailbox_poll         IMAP → tickets (skips cleanly without imapflow)
+ *   - email_digest         weekly unread notification email (honors emailPrefs)
  *
  * Every run is recorded in `platform_job_runs`; /api/v1/health reads that
  * table to report worker freshness, so a stalled scheduler is an alerting
@@ -23,6 +24,7 @@ import { escalateOverdueInOrg } from "@/modules/requests/service";
 import { escalateOverdueObligationsInOrg } from "@/modules/governance/service";
 import { sweepExpiredTrials } from "@/modules/billing/service";
 import { pollAllMailboxes } from "@/modules/mailboxes/service";
+import { sendWeeklyDigests } from "@/modules/notifications/service";
 
 export type JobResult = { ok: boolean; detail: Record<string, unknown> };
 type Job = () => Promise<JobResult>;
@@ -33,6 +35,7 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   request_escalation: { run: runPerOrgRequestEscalation, everyMs: 5 * 60_000 },
   governance_sweep: { run: runPerOrgGovernanceSweep, everyMs: 60 * 60_000 },
   mailbox_poll: { run: runMailboxPoll, everyMs: 60_000 },
+  email_digest: { run: runEmailDigest, everyMs: 60 * 60_000 },
 };
 
 /** Tenant ids the per-org sweeps iterate (platform org excluded). */
@@ -114,6 +117,15 @@ async function runPerOrgGovernanceSweep(): Promise<JobResult> {
     }
   }
   return { ok: failures.length === 0, detail: { orgs: orgs.length, escalated, failures: failures.slice(0, 5) } };
+}
+
+async function runEmailDigest(): Promise<JobResult> {
+  try {
+    const r = await sendWeeklyDigests();
+    return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
 }
 
 async function runMailboxPoll(): Promise<JobResult> {

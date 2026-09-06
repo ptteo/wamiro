@@ -10,7 +10,11 @@ import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
 import { listOrgSessions, getAdminOverview } from "@/modules/admin/service";
+import { listPasswordChangeRequests } from "@/modules/auth/passwords";
+import { getPolicies } from "@/modules/org/policies";
 import { SessionRevokeButton } from "@/components/admin-user-actions";
+import { OrgPoliciesForm } from "@/components/org-policies-form";
+import { PasswordRequestsAdmin } from "@/components/password-requests-admin";
 
 export const metadata = { title: "Security center" };
 
@@ -27,7 +31,12 @@ export default async function SecurityCenterPage() {
     );
   }
 
-  const [overview, sessions] = await Promise.all([getAdminOverview(ctx), listOrgSessions(ctx)]);
+  const [overview, sessions, policies, passwordRequests] = await Promise.all([
+    getAdminOverview(ctx),
+    listOrgSessions(ctx),
+    getPolicies(ctx),
+    listPasswordChangeRequests(ctx),
+  ]);
 
   const mfaPct = overview.users.total
     ? Math.round((overview.users.mfaEnabled / overview.users.total) * 100)
@@ -60,19 +69,20 @@ export default async function SecurityCenterPage() {
           />
       </AdminKpiStrip>
 
-      <AdminSection title="Authentication" subtitle="Tenant-wide policies (read-only in v1)">
-        <ul className="divide-y divide-border-subtle text-sm">
+      <AdminSection title="Authentication" subtitle="Tenant-wide policies. Session timeout stays 14 days.">
+        <OrgPoliciesForm
+          allowedEmailDomains={policies.allowedEmailDomains ?? []}
+          mfaMode={policies.mfaMode}
+          passwordMode={policies.passwordMode}
+        />
+        <ul className="mt-4 divide-y divide-border-subtle text-sm">
           <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
-            <span className="shrink-0 text-tertiary">Password policy</span>
-            <span className="text-primary sm:text-right">Minimum 8 characters; scrypt hash with per-user salt.</span>
+            <span className="shrink-0 text-tertiary">Password strength</span>
+            <span className="text-primary sm:text-right">Minimum 10 characters, letter + number; scrypt hash.</span>
           </li>
           <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
-            <span className="shrink-0 text-tertiary">Session timeout</span>
-            <span className="text-primary sm:text-right">14 days, httpOnly + SameSite=Lax, SHA-256 token storage.</span>
-          </li>
-          <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
-            <span className="shrink-0 text-tertiary">Login protection</span>
-            <span className="text-primary sm:text-right">Per-email and per-IP rate limits on /auth/login.</span>
+            <span className="shrink-0 text-tertiary">Lockout</span>
+            <span className="text-primary sm:text-right">10 failed sign-ins in 15 minutes → 30-minute lock.</span>
           </li>
           <li className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
             <span className="shrink-0 text-tertiary">MFA</span>
@@ -83,11 +93,18 @@ export default async function SecurityCenterPage() {
               </Link>
             </span>
           </li>
-          <li className="flex items-center justify-between py-2.5">
-            <span className="text-tertiary">SSO</span>
-            <Badge tone="neutral">Not configured</Badge>
-          </li>
         </ul>
+      </AdminSection>
+
+      <AdminSection title="Password change requests" subtitle="Only used when password mode is managed.">
+        <PasswordRequestsAdmin
+          requests={passwordRequests.map((r) => ({
+            id: r.id,
+            name: r.name,
+            email: r.email,
+            createdAt: r.createdAt.toISOString(),
+          }))}
+        />
       </AdminSection>
 
       <AdminSection
