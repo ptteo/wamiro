@@ -2,10 +2,11 @@ export const dynamic = "force-dynamic";
 
 import { PlatformClient } from "@/components/platform-client";
 import { PlatformOpsClient } from "@/components/platform-ops-client";
-import { Card, EmptyState } from "@/components/ui";
+import { Badge, Card, EmptyState } from "@/components/ui";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { listTenants, platformStats } from "@/modules/platform/service";
+import { fleetStorage, formatBytes } from "@/modules/storage/service";
 import {
   listImpersonationLedger,
   listAvailableGrants,
@@ -25,13 +26,14 @@ export default async function PlatformPage() {
     );
   }
 
-  const [tenants, stats, riskTenants, grants, queue, ledger] = await Promise.all([
+  const [tenants, stats, riskTenants, grants, queue, ledger, storage] = await Promise.all([
     listTenants(ctx),
     platformStats(ctx),
     tenantRiskBoard(ctx),
     listAvailableGrants(ctx),
     platformSupportQueue(ctx),
     listImpersonationLedger(ctx),
+    fleetStorage(ctx),
   ]);
 
   return (
@@ -113,6 +115,40 @@ export default async function PlatformPage() {
         }}
         selfOrgId={ctx.user.organizationId}
       />
+
+      <Card>
+        <div className="flex flex-col gap-4 border-b border-border-subtle p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-tertiary">Fleet storage</p>
+            <p className="mt-1 text-xl font-semibold text-primary">
+              {formatBytes(storage.totalBytes)}
+              <span className="ml-2 text-sm font-normal text-tertiary">
+                across {storage.totalObjects} object{storage.totalObjects === 1 ? "" : "s"} in {storage.tenantCount} tenant{storage.tenantCount === 1 ? "" : "s"}
+              </span>
+            </p>
+          </div>
+          <Badge tone={storage.storageBackend === "s3" ? "green" : "neutral"}>
+            {storage.storageBackend === "s3" ? "S3 / R2" : "Local disk"}
+          </Badge>
+        </div>
+        {storage.topTenants.length > 0 ? (
+          <ul className="divide-y divide-border-subtle">
+            {storage.topTenants.map((t) => (
+              <li key={t.organizationId} className="flex items-center justify-between gap-4 px-5 py-3 text-sm">
+                <span className="min-w-0 truncate font-medium text-primary">{t.name}</span>
+                <span className="shrink-0 text-secondary">
+                  {formatBytes(t.totalBytes)}
+                  <span className="ml-1.5 text-xs text-tertiary">· {t.totalObjects} obj</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="p-5">
+            <EmptyState title="No stored files yet" hint="Uploaded documents and attachments across all tenants appear here." />
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

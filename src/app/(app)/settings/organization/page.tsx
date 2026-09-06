@@ -2,7 +2,9 @@ export const dynamic = "force-dynamic";
 
 import { BrandingClient } from "@/components/branding-client";
 import { DomainSettings } from "@/components/domain-settings";
+import { OrgDeletionClient } from "@/components/org-deletion-client";
 import { SupportAccessClient } from "@/components/support-access-client";
+import { deletionStatus } from "@/modules/org/service";
 import { getDomainState } from "@/modules/org/domain";
 import { myImpersonationGrant } from "@/modules/platform/console";
 import { PageHeader } from "@/components/page-header";
@@ -16,6 +18,7 @@ export default async function OrganizationSettingsPage() {
   const canManage = can(ctx.access, "settings.manage");
   const domainState = canManage ? await getDomainState(ctx) : null;
   const grantRow = await myImpersonationGrant(ctx);
+  const deletion = canManage ? await deletionStatus(ctx) : null;
 
   return (
     <div className="min-w-0 space-y-5">
@@ -113,6 +116,10 @@ export default async function OrganizationSettingsPage() {
         })()}
         canManage={canManage}
       />
+
+      {canManage && deletion ? (
+        <OrgDeletionClient orgName={ctx.org.name} canManage={canManage} initial={deletion} />
+      ) : null}
     </div>
   );
 }

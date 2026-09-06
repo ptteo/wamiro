@@ -86,7 +86,10 @@ export async function listDocs(
     .orderBy(desc(employeeDocuments.createdAt))
     .limit(500);
   if (manage) {
-    void sweepDocumentExpiries(orgId);
+    // Fire-and-forget: the sweep may outlive the request's tenant-scoped
+    // connection (Phase 4 RLS), so swallow failures — the jobs worker runs
+    // the same sweep with platform scope.
+    void sweepDocumentExpiries(orgId).catch(() => {});
   }
   return { docs: rows, canManageAll: manage };
 }

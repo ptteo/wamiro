@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import "@/lib/event-consumers"; // R6 §33 — register domain-event consumers once
 
+import { withTenantScope } from "./db";
 import { ApiError } from "./errors";
 import { enforceRateLimit, maybeSweep } from "./ratelimit";
 import {
@@ -98,7 +99,16 @@ export function route(
       }
 
       const params = routeCtx?.params ? await routeCtx.params : {};
-      const response = await handler(req, { auth: auth as AuthContext, meta, params });
+      const handle = async () => handler(req, { auth: auth as AuthContext, meta, params });
+      // Phase 4 — RLS defense-in-depth: run tenant requests with Postgres
+      // row-level security scoped to the session's active org. Platform
+      // operators (console, impersonation) stay unscoped — their queries
+      // intentionally span tenants and the console's own permission gates
+      // are the control.
+      const response =
+        auth && !can(auth.access, "platform.admin")
+          ? await withTenantScope(auth.org.id, handle)
+          : await handle();
       // §34 structured access log — one line per request, §21 safe context
       console.log(
         JSON.stringify({
