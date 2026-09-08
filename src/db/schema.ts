@@ -115,6 +115,11 @@ export const organizations = pgTable(
     billingProvider: text("billing_provider"),
     billingCustomerId: text("billing_customer_id"),
     billingSubscriptionId: text("billing_subscription_id"),
+    /** hard = invite at cap throws; soft = allow + overage banner. */
+    seatOveragePolicy: text("seat_overage_policy").notNull().default("hard"),
+    billingStatusChangedAt: timestamp("billing_status_changed_at", { withTimezone: true }),
+    /** Last dunning email sent: 0 (none) | 1 | 3 | 7. */
+    dunningStage: integer("dunning_stage").notNull().default(0),
     /** SCIM 2.0 provisioning (Phase C): enabled flag + hashed bearer token. */
     scimEnabled: boolean("scim_enabled").notNull().default(false),
     scimTokenHash: text("scim_token_hash"),
@@ -2848,5 +2853,40 @@ export const rateLimitHits = pgTable(
   (t) => [
     primaryKey({ columns: [t.scope, t.key, t.windowStart] }),
     index("rate_limit_hits_expiry_idx").on(t.windowStart),
+  ],
+);
+
+// ---------- Phase 3 — Paddle billing ----------
+
+export const billingEvents = pgTable(
+  "billing_events",
+  {
+    eventId: text("event_id").primaryKey(),
+    eventType: text("event_type").notNull(),
+    organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("billing_events_org_idx").on(t.organizationId)],
+);
+
+export const billingInvoices = pgTable(
+  "billing_invoices",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    providerInvoiceId: text("provider_invoice_id").notNull(),
+    amountCents: integer("amount_cents").notNull().default(0),
+    currency: text("currency").notNull().default("USD"),
+    status: text("status").notNull().default("paid"),
+    hostedUrl: text("hosted_url"),
+    billedAt: timestamp("billed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("billing_invoices_provider_key").on(t.providerInvoiceId),
+    index("billing_invoices_org_billed_idx").on(t.organizationId, t.billedAt),
   ],
 );

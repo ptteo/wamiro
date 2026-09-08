@@ -5,6 +5,7 @@
  * every scheduled sweep against ALL tenants:
  *   - sla_sweep            ticket SLA recompute + one-time warn/breach notes
  *   - trial_sweep          trial expiry → past_due / starter downgrade
+ *   - dunning_sweep        past_due day 1/3/7 emails to billing contacts
  *   - request_escalation   overdue request SLAs → escalate + notify
  *   - governance_sweep     overdue obligations → escalate + notify
  *   - mailbox_poll         IMAP → tickets (skips cleanly without imapflow)
@@ -19,10 +20,14 @@ import { desc, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { platformJobRuns } from "@/db/schema";
+import { ApiError } from "@/lib/errors";
+import type { AuthContext } from "@/lib/session";
+import { can } from "@/modules/iam/engine";
 import { sweepOrgSlaStates } from "@/modules/tickets/service";
 import { escalateOverdueInOrg } from "@/modules/requests/service";
 import { escalateOverdueObligationsInOrg } from "@/modules/governance/service";
 import { sweepExpiredTrials } from "@/modules/billing/service";
+import { sweepDunning } from "@/modules/billing/dunning";
 import { pollAllMailboxes } from "@/modules/mailboxes/service";
 import { sendWeeklyDigests } from "@/modules/notifications/service";
 import { purgeDueDeletions } from "@/modules/org/service";
@@ -35,6 +40,7 @@ type Job = () => Promise<JobResult>;
 export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   sla_sweep: { run: runPerOrgSlaSweep, everyMs: 5 * 60_000 },
   trial_sweep: { run: runTrialSweep, everyMs: 60 * 60_000 },
+  dunning_sweep: { run: runDunningSweep, everyMs: 60 * 60_000 },
   request_escalation: { run: runPerOrgRequestEscalation, everyMs: 5 * 60_000 },
   governance_sweep: { run: runPerOrgGovernanceSweep, everyMs: 60 * 60_000 },
   mailbox_poll: { run: runMailboxPoll, everyMs: 60_000 },
@@ -96,6 +102,15 @@ async function runPerOrgSlaSweep(): Promise<JobResult> {
 async function runTrialSweep(): Promise<JobResult> {
   const changed = await sweepExpiredTrials();
   return { ok: true, detail: { downgradedOrDunned: changed } };
+}
+
+async function runDunningSweep(): Promise<JobResult> {
+  try {
+    const r = await sweepDunning();
+    return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
 }
 
 async function runPerOrgRequestEscalation(): Promise<JobResult> {
@@ -238,4 +253,44 @@ export async function jobHealth(): Promise<{ jobs: JobHealth[]; stale: boolean; 
   const seen = rows.length > 0;
   const stale = seen && jobs.some((j) => !j.fresh);
   return { jobs, stale, seen };
+}
+
+export interface JobLedgerRow {
+  job: string;
+  ok: boolean;
+  everRan: boolean;
+  startedAt: string;
+  finishedAt: string | null;
+  everyMs: number;
+  stale: boolean;
+  detail: Record<string, unknown> | null;
+  failures: string[];
+}
+
+/** Last run per job name — platform console. No history table. */
+export async function listJobLedger(ctx: AuthContext): Promise<JobLedgerRow[]> {
+  if (!can(ctx.access, "platform.admin")) throw ApiError.forbidden("Missing permission: platform.admin");
+  const rows = await db.select().from(platformJobRuns);
+  const health = await jobHealth();
+  const staleByJob = new Map(health.jobs.map((j) => [j.job, !j.fresh && j.everRan]));
+  const byName = new Map(rows.map((r) => [r.job, r]));
+  return Object.entries(JOBS).map(([job, def]) => {
+    const r = byName.get(job);
+    const detail = (r?.detail && typeof r.detail === "object" ? r.detail : null) as Record<string, unknown> | null;
+    const rawFailures = detail?.failures;
+    const failures = Array.isArray(rawFailures)
+      ? rawFailures.map((f) => String(f)).slice(0, 8)
+      : [];
+    return {
+      job,
+      ok: r?.ok ?? false,
+      everRan: Boolean(r),
+      startedAt: r?.startedAt.toISOString() ?? "",
+      finishedAt: r?.finishedAt ? r.finishedAt.toISOString() : null,
+      everyMs: def.everyMs,
+      stale: staleByJob.get(job) ?? false,
+      detail,
+      failures,
+    };
+  });
 }

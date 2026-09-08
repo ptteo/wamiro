@@ -1,6 +1,8 @@
 import { PageHeader } from "@/components/page-header";
+import { BillingActions } from "@/components/billing-client";
 import { Badge, btn } from "@/components/ui";
 import { requireAuthPage } from "@/lib/page-auth";
+import { can } from "@/modules/iam/engine";
 import { subscriptionView } from "@/modules/billing/service";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +18,7 @@ const STATUS_TONE: Record<string, "green" | "amber" | "red" | "neutral" | "brand
 export default async function BillingSettingsPage() {
   const ctx = await requireAuthPage();
   const sub = await subscriptionView(ctx);
+  const canManage = can(ctx.access, "settings.manage");
   const pct =
     sub.seatLimit === null ? null : Math.min(100, Math.round((sub.activeSeats / Math.max(1, sub.seatLimit)) * 100));
 
@@ -26,7 +29,16 @@ export default async function BillingSettingsPage() {
       {sub.billingStatus === "past_due" && (
         <div className="rounded-lg border border-amber/40 bg-amber-subtle px-4 py-3 text-sm text-amber">
           Your subscription payment is overdue. Features stay available, but access will be suspended if it is not
-          resolved. Please contact support.
+          resolved. {canManage && sub.paddleConfigured && sub.hasCustomer
+            ? "Use Manage billing to update the card."
+            : "Please contact support or your administrator."}
+        </div>
+      )}
+
+      {sub.seatsOverCap && (
+        <div className="rounded-lg border border-amber/40 bg-amber-subtle px-4 py-3 text-sm text-amber">
+          You have {sub.activeSeats} people on a plan that includes {sub.seatLimit}. Extra seats are billed on the next
+          invoice.
         </div>
       )}
 
@@ -47,22 +59,24 @@ export default async function BillingSettingsPage() {
             {sub.billingProvider ? (
               <p className="mt-1 text-xs text-tertiary">Billed through {sub.billingProvider}</p>
             ) : (
-              <p className="mt-1 text-xs text-tertiary">Invoiced by the platform operator</p>
+              <p className="mt-1 text-xs text-tertiary">
+                {sub.paddleConfigured ? "Upgrade below to pay with Paddle." : "Invoiced by the platform operator"}
+              </p>
             )}
           </div>
           <div className="shrink-0">
-            {sub.upgradeUrl ? (
+            {!sub.paddleConfigured && sub.upgradeUrl ? (
               <a href={sub.upgradeUrl} target="_blank" rel="noreferrer" className={`${btn.primary} ${btn.small}`}>
                 Upgrade plan
               </a>
-            ) : (
+            ) : !sub.paddleConfigured ? (
               <a
                 href="mailto:sales@wamiro.app?subject=Upgrade request"
                 className={`${btn.primary} ${btn.small}`}
               >
                 Talk to sales
               </a>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -117,6 +131,17 @@ export default async function BillingSettingsPage() {
           </ul>
         </div>
       </section>
+
+      <BillingActions
+        canManage={canManage}
+        paddleConfigured={sub.paddleConfigured}
+        hasCustomer={sub.hasCustomer}
+        hasSubscription={sub.hasSubscription}
+        currentPlan={sub.plan}
+        billingStatus={sub.billingStatus}
+        plans={sub.plans}
+        invoices={sub.invoices}
+      />
     </div>
   );
 }

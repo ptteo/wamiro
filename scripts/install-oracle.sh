@@ -8,8 +8,8 @@
 #   cp .env.example .env && nano .env        # set DATABASE_URL + APP_URL first
 #   sudo bash scripts/install-oracle.sh
 #
-# Idempotent — safe to re-run. Frappe HR & Zammad have their own interactive
-# bring-ups: see docs/deploy-oracle.md §4–5 after this script succeeds.
+# Idempotent — safe to re-run. Do not install Zammad or Frappe HR on this
+# box; HR and tickets are native Wamiro modules.
 # =============================================================================
 set -euo pipefail
 
@@ -90,7 +90,6 @@ echo "============================================================"
 echo " Next steps:"
 echo "   1. sudo -u ubuntu npm run db:migrate:raw   # if not yet run"
 echo "   2. sudo -u ubuntu npm run db:seed          # demo users"
-echo "   3. Zammad + Frappe HR: docs/deploy-oracle.md §4–5"
-echo "      (interactive; then wire tokens into $APP_DIR/.env"
-echo "       and 'sudo systemctl restart wamiro')"
+echo "   3. If this box still has leftover Zammad/Frappe from an older"
+echo "      install: sudo CONFIRM=yes bash scripts/remove-zammad-frappe.sh"
 echo "============================================================"

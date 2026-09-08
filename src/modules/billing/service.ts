@@ -2,29 +2,48 @@
  * Billing service (multi-tenant commercialization).
  *
  * Owns the org-level subscription: plan tier, billing lifecycle state, trial
- * windows, and seat enforcement. Payment-provider wiring is deliberately
- * behind a small adapter (`billingAdapter`, below) so the product ships and
- * operates without credentials (self-serve on Starter) and Stripe/Paddle can
- * be dropped in without touching call sites.
+ * windows, and seat enforcement. Payment-provider wiring lives in adapter.ts
+ * (Paddle). Unset credentials keep Starter self-serve and "Talk to sales".
  *
  * Lifecycle:
  *   new org → starter/active (usable immediately)
  *   platform grants trial of growth|scale → trial, trial_ends_at set
+ *   self-serve checkout (Paddle) → webhook sets active + customer/sub ids
  *   sweep: trial expired →
  *       provider configured → past_due (dunning begins, provider drives)
  *       no provider         → downgrade to starter/active (grace), audit
  *   cancelled (provider webhook / platform) → access blocked at auth
  */
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
 import type { AuthContext } from "@/lib/session";
-import { organizations, organizationMemberships } from "@/db/schema";
-import { effectiveSeatLimit, planOf, type PlanDef } from "./plans";
+import { billingInvoices, organizations, organizationMemberships } from "@/db/schema";
+import {
+  cancelPaddleSubscription,
+  createCheckoutUrl,
+  createPortalUrl,
+  paddleConfigured,
+  priceIdForPlan,
+  syncSubscriptionQuantity,
+  type PaidPlanId,
+} from "./adapter";
+import { PLANS, effectiveSeatLimit, planOf, type PlanDef } from "./plans";
+import type { BillingStatus } from "./status";
 
-export type BillingStatus = "trial" | "active" | "past_due" | "cancelled";
+export type { BillingStatus };
+
+export interface BillingInvoiceView {
+  id: string;
+  providerInvoiceId: string;
+  amountCents: number;
+  currency: string;
+  status: string;
+  hostedUrl: string | null;
+  billedAt: string | null;
+}
 
 export interface SubscriptionView {
   plan: string;
@@ -37,10 +56,24 @@ export interface SubscriptionView {
   seatLimit: number | null;
   activeSeats: number;
   seatsRemaining: number | null;
+  seatsOverCap: boolean;
+  seatOveragePolicy: "hard" | "soft";
   billingProvider: string | null;
   /** When no payment provider is wired, upgrades go through the operator. */
   upgradeUrl: string | null;
+  paddleConfigured: boolean;
+  hasCustomer: boolean;
+  hasSubscription: boolean;
   highlights: string[];
+  invoices: BillingInvoiceView[];
+  plans: {
+    id: string;
+    name: string;
+    tagline: string;
+    monthlyPerSeat: number | null;
+    seatLimit: number | null;
+    highlights: string[];
+  }[];
 }
 
 /** Active seats = active memberships in this org (invites + linked identities). */
@@ -69,13 +102,17 @@ export async function seatLimitForOrg(orgId: string): Promise<number | null> {
 }
 
 /**
- * Seat enforcement — called before creating a new membership. Throws a clear
- * conflict when the org is at its plan's seat cap so admins see exactly why
- * an invite failed.
+ * Seat enforcement — called before creating a new membership. Hard policy
+ * throws at the cap. Soft policy lets the invite through (banner + Paddle
+ * quantity sync happen after).
  */
 export async function assertSeatAvailable(ctx: AuthContext): Promise<void> {
   const [org] = await db
-    .select({ plan: organizations.plan, seatLimit: organizations.seatLimit })
+    .select({
+      plan: organizations.plan,
+      seatLimit: organizations.seatLimit,
+      seatOveragePolicy: organizations.seatOveragePolicy,
+    })
     .from(organizations)
     .where(eq(organizations.id, ctx.user.organizationId))
     .limit(1);
@@ -84,17 +121,62 @@ export async function assertSeatAvailable(ctx: AuthContext): Promise<void> {
   if (limit === null) return; // unlimited plan
   const seats = await activeSeatCount(ctx.user.organizationId);
   if (seats >= limit) {
+    if (org.seatOveragePolicy === "soft") return;
     const plan = planOf(org.plan);
     throw ApiError.conflict(
       `Your ${plan.name} plan allows up to ${limit} people (${seats} currently active). ` +
-        `Ask your platform administrator to upgrade to a larger plan.`,
+        `Upgrade in Settings → Plan & Billing, or ask your platform administrator.`,
     );
+  }
+}
+
+/** Best-effort: push current headcount to Paddle. Never fails the invite. */
+export async function syncSeatsAfterInvite(orgId: string): Promise<void> {
+  try {
+    if (!paddleConfigured()) return;
+    const [org] = await db
+      .select({
+        plan: organizations.plan,
+        billingSubscriptionId: organizations.billingSubscriptionId,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    if (!org?.billingSubscriptionId) return;
+    const priceId = priceIdForPlan(org.plan);
+    if (!priceId) return;
+    const quantity = await activeSeatCount(orgId);
+    await syncSubscriptionQuantity({
+      subscriptionId: org.billingSubscriptionId,
+      priceId,
+      quantity,
+    });
+  } catch (e) {
+    console.error(JSON.stringify({ level: "error", msg: "billing_seat_sync_failed", orgId, err: String(e) }));
   }
 }
 
 export function upgradeUrlFor(): string | null {
   const raw = process.env.BILLING_UPGRADE_URL;
   return raw && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+async function invoicesFor(orgId: string): Promise<BillingInvoiceView[]> {
+  const rows = await db
+    .select()
+    .from(billingInvoices)
+    .where(eq(billingInvoices.organizationId, orgId))
+    .orderBy(desc(billingInvoices.billedAt), desc(billingInvoices.createdAt))
+    .limit(50);
+  return rows.map((r) => ({
+    id: r.id,
+    providerInvoiceId: r.providerInvoiceId,
+    amountCents: r.amountCents,
+    currency: r.currency,
+    status: r.status,
+    hostedUrl: r.hostedUrl,
+    billedAt: r.billedAt ? r.billedAt.toISOString() : null,
+  }));
 }
 
 export async function subscriptionView(ctx: AuthContext): Promise<SubscriptionView> {
@@ -104,7 +186,10 @@ export async function subscriptionView(ctx: AuthContext): Promise<SubscriptionVi
       billingStatus: organizations.billingStatus,
       trialEndsAt: organizations.trialEndsAt,
       seatLimit: organizations.seatLimit,
+      seatOveragePolicy: organizations.seatOveragePolicy,
       billingProvider: organizations.billingProvider,
+      billingCustomerId: organizations.billingCustomerId,
+      billingSubscriptionId: organizations.billingSubscriptionId,
     })
     .from(organizations)
     .where(eq(organizations.id, ctx.user.organizationId))
@@ -117,6 +202,7 @@ export async function subscriptionView(ctx: AuthContext): Promise<SubscriptionVi
     org.trialEndsAt && org.billingStatus === "trial"
       ? Math.max(0, Math.ceil((org.trialEndsAt.getTime() - Date.now()) / 86_400_000))
       : null;
+  const invoices = await invoicesFor(ctx.user.organizationId);
   return {
     plan: plan.id,
     planName: plan.name,
@@ -128,10 +214,42 @@ export async function subscriptionView(ctx: AuthContext): Promise<SubscriptionVi
     seatLimit: limit,
     activeSeats: seats,
     seatsRemaining: limit === null ? null : Math.max(0, limit - seats),
+    seatsOverCap: limit !== null && seats > limit,
+    seatOveragePolicy: org.seatOveragePolicy === "soft" ? "soft" : "hard",
     billingProvider: org.billingProvider,
     upgradeUrl: upgradeUrlFor(),
+    paddleConfigured: paddleConfigured(),
+    hasCustomer: Boolean(org.billingCustomerId),
+    hasSubscription: Boolean(org.billingSubscriptionId),
     highlights: plan.highlights,
+    invoices,
+    plans: Object.values(PLANS).map((p) => ({
+      id: p.id,
+      name: p.name,
+      tagline: p.tagline,
+      monthlyPerSeat: p.monthlyPerSeat,
+      seatLimit: p.seatLimit,
+      highlights: p.highlights,
+    })),
   };
+}
+
+/** Home banner: over the seat cap (soft policy). Cheap — no invoice list. */
+export async function seatOverageNotice(orgId: string): Promise<{
+  seatsOverCap: boolean;
+  activeSeats: number;
+  seatLimit: number | null;
+} | null> {
+  const [org] = await db
+    .select({ plan: organizations.plan, seatLimit: organizations.seatLimit })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org) return null;
+  const limit = effectiveSeatLimit(org.plan, org.seatLimit);
+  const seats = await activeSeatCount(orgId);
+  if (limit === null || seats <= limit) return null;
+  return { seatsOverCap: true, activeSeats: seats, seatLimit: limit };
 }
 
 // ---------------------------------------------------------------------------
@@ -148,11 +266,23 @@ function validatePlan(plan: string): PlanDef {
 export async function setOrgPlan(
   ctx: AuthContext,
   orgId: string,
-  input: { plan?: string; billingStatus?: BillingStatus; trialDays?: number | null; seatLimit?: number | null },
+  input: {
+    plan?: string;
+    billingStatus?: BillingStatus;
+    trialDays?: number | null;
+    seatLimit?: number | null;
+    seatOveragePolicy?: "hard" | "soft";
+  },
 ): Promise<void> {
-  // Read current state first so partial updates keep the untouched fields.
   const [current] = await db
-    .select({ plan: organizations.plan, billingStatus: organizations.billingStatus, trialEndsAt: organizations.trialEndsAt })
+    .select({
+      plan: organizations.plan,
+      billingStatus: organizations.billingStatus,
+      trialEndsAt: organizations.trialEndsAt,
+      seatOveragePolicy: organizations.seatOveragePolicy,
+      billingStatusChangedAt: organizations.billingStatusChangedAt,
+      dunningStage: organizations.dunningStage,
+    })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
@@ -163,6 +293,11 @@ export async function setOrgPlan(
   if (!["trial", "active", "past_due", "cancelled"].includes(status)) {
     throw ApiError.badRequest("billingStatus must be trial|active|past_due|cancelled");
   }
+  if (input.seatOveragePolicy && input.seatOveragePolicy !== "hard" && input.seatOveragePolicy !== "soft") {
+    throw ApiError.badRequest("seatOveragePolicy must be hard or soft");
+  }
+  const statusChanged = status !== current.billingStatus;
+  const now = new Date();
   const patch = await db
     .update(organizations)
     .set({
@@ -174,9 +309,12 @@ export async function setOrgPlan(
           : null,
       seatLimit:
         input.seatLimit === undefined || input.seatLimit === null
-          ? null // clear override → plan default applies
+          ? null
           : Math.max(1, Math.floor(input.seatLimit)),
-      updatedAt: new Date(),
+      seatOveragePolicy: input.seatOveragePolicy ?? current.seatOveragePolicy,
+      billingStatusChangedAt: statusChanged ? now : current.billingStatusChangedAt,
+      dunningStage: statusChanged ? 0 : current.dunningStage,
+      updatedAt: now,
     })
     .where(eq(organizations.id, orgId))
     .returning({ id: organizations.id, name: organizations.name });
@@ -191,6 +329,7 @@ export async function setOrgPlan(
       plan: plan.id,
       billingStatus: status,
       seatLimit: input.seatLimit === undefined ? null : input.seatLimit,
+      seatOveragePolicy: input.seatOveragePolicy ?? current.seatOveragePolicy,
     },
   });
 }
@@ -215,11 +354,21 @@ export async function sweepExpiredTrials(now: Date = new Date()): Promise<number
     .where(and(eq(organizations.billingStatus, "trial"), sql`${organizations.trialEndsAt} < ${now}`));
   let changed = 0;
   for (const org of expired) {
-    // With a payment provider the plan is kept and dunning begins (the provider
-    // drives the next transition). Without one, gracefully downgrade to Starter.
-    const next: Record<string, unknown> = { billingStatus: org.billingProvider ? "past_due" : "active", updatedAt: now };
-    if (!org.billingProvider) next.plan = "starter";
-    await db.update(organizations).set(next).where(eq(organizations.id, org.id));
+    const nextStatus = org.billingProvider ? "past_due" : "active";
+    await db
+      .update(organizations)
+      .set(
+        org.billingProvider
+          ? { billingStatus: nextStatus, billingStatusChangedAt: now, dunningStage: 0, updatedAt: now }
+          : {
+              billingStatus: nextStatus,
+              plan: "starter",
+              billingStatusChangedAt: now,
+              dunningStage: 0,
+              updatedAt: now,
+            },
+      )
+      .where(eq(organizations.id, org.id));
     changed += 1;
   }
   return changed;
@@ -233,6 +382,106 @@ export function billingBlocksAccess(billingStatus: string | null | undefined): b
 /** Surface the org's billing state for the session gate message. */
 export function billingBlockReason(billingStatus: string | null | undefined): string | null {
   if (billingStatus === "cancelled") return "This organization's subscription has ended.";
-  if (billingStatus === "past_due") return "This organization has an overdue subscription. Please contact support.";
+  if (billingStatus === "past_due") return "This organization has an overdue subscription. Please update billing.";
   return null;
+}
+
+async function loadOrgBilling(orgId: string) {
+  const [org] = await db
+    .select({
+      id: organizations.id,
+      plan: organizations.plan,
+      billingCustomerId: organizations.billingCustomerId,
+      billingSubscriptionId: organizations.billingSubscriptionId,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org) throw ApiError.notFound();
+  return org;
+}
+
+/** Start Paddle checkout, or switch the existing subscription's price in place. */
+export async function startCheckout(ctx: AuthContext, plan: PaidPlanId): Promise<{ url: string | null; changed: boolean }> {
+  if (plan !== "growth" && plan !== "scale") {
+    throw ApiError.badRequest("Choose Growth or Scale");
+  }
+  if (!paddleConfigured() || !priceIdForPlan(plan)) {
+    throw ApiError.unavailable("Self-serve billing is not configured. Contact sales to upgrade.");
+  }
+  const org = await loadOrgBilling(ctx.user.organizationId);
+  const quantity = Math.max(1, await activeSeatCount(ctx.user.organizationId));
+  if (org.billingSubscriptionId) {
+    const priceId = priceIdForPlan(plan);
+    if (!priceId) throw ApiError.unavailable("No Paddle price is configured for that plan.");
+    await syncSubscriptionQuantity({
+      subscriptionId: org.billingSubscriptionId,
+      priceId,
+      quantity,
+    });
+    await db
+      .update(organizations)
+      .set({ plan, updatedAt: new Date() })
+      .where(eq(organizations.id, org.id));
+    await audit({
+      organizationId: ctx.user.organizationId,
+      actorUserId: ctx.user.id,
+      action: "BILLING_PLAN_CHANGED",
+      entityType: "organization",
+      entityId: org.id,
+      newValue: { plan, via: "paddle_patch" },
+    });
+    return { url: null, changed: true };
+  }
+  const url = await createCheckoutUrl({
+    orgId: org.id,
+    plan,
+    quantity,
+    email: ctx.user.email,
+    customerId: org.billingCustomerId,
+  });
+  await audit({
+    organizationId: ctx.user.organizationId,
+    actorUserId: ctx.user.id,
+    action: "BILLING_CHECKOUT_STARTED",
+    entityType: "organization",
+    entityId: org.id,
+    newValue: { plan, quantity },
+  });
+  return { url, changed: false };
+}
+
+export async function startPortal(ctx: AuthContext): Promise<{ url: string }> {
+  if (!paddleConfigured()) {
+    throw ApiError.unavailable("Self-serve billing is not configured.");
+  }
+  const org = await loadOrgBilling(ctx.user.organizationId);
+  if (!org.billingCustomerId) {
+    throw ApiError.badRequest("No billing customer yet. Upgrade a plan first.");
+  }
+  const url = await createPortalUrl({
+    customerId: org.billingCustomerId,
+    subscriptionId: org.billingSubscriptionId,
+  });
+  return { url };
+}
+
+export async function cancelSelfServe(ctx: AuthContext): Promise<{ scheduled: boolean }> {
+  if (!paddleConfigured()) {
+    throw ApiError.unavailable("Self-serve billing is not configured. Ask the platform operator to cancel.");
+  }
+  const org = await loadOrgBilling(ctx.user.organizationId);
+  if (!org.billingSubscriptionId) {
+    throw ApiError.badRequest("There is no paid subscription to cancel.");
+  }
+  await cancelPaddleSubscription({ subscriptionId: org.billingSubscriptionId });
+  await audit({
+    organizationId: ctx.user.organizationId,
+    actorUserId: ctx.user.id,
+    action: "BILLING_CANCEL_REQUESTED",
+    entityType: "organization",
+    entityId: org.id,
+    newValue: { via: "paddle", effectiveFrom: "next_billing_period" },
+  });
+  return { scheduled: true };
 }

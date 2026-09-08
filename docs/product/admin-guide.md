@@ -25,6 +25,13 @@ engineering help.
 - Delegation: approvers can delegate approvals while away (Approvals →
   Delegations). Delegated approvals are audited with both identities.
 
+## First week (Help, tour, sample data)
+
+- **Help** (`/help`): short guides (clock in, leave, tickets) plus your knowledge articles. “Ask the assistant” uses the existing AI chat. “Contact support” opens a **platform** ticket — Wamiro operators see it, not your IT queue.
+- **Replay tour**: Account menu or Help. First visit to Home, Attendance, Leave, Tickets, and Requests starts a short overlay (skip / next / Esc). State is stored in your preferences, per company.
+- **Sample work**: on `/setup`, admins can load a demo project and sample tickets (`demo: true`). Purge removes only those rows for this company.
+- **Email preferences**: Security → Email notifications. Turn kinds off, set quiet hours (email skipped, in-app kept), or a weekly unread digest. SMTP is `SMTP_URL` — see `docs/ops/smtp-dns.md` for SPF/DKIM/DMARC.
+
 ## Modules & workspaces
 
 - Enable/disable modules in Organization settings. A disabled module loses its
@@ -52,8 +59,8 @@ construction.
 
 ## Integrations
 
-People, attendance, leave, payroll, and helpdesk are native Wamiro modules —
-there is no Frappe HR or Zammad dependency. Optional connections:
+People, attendance, leave, payroll, and helpdesk are native Wamiro modules.
+Optional connections:
 
 - **SMTP** — invitations and notifications (`SMTP_URL`)
 - **SSO / SCIM** — `/admin/security` when the org uses an identity provider

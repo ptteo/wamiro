@@ -11,8 +11,11 @@ const patchSchema = z
     billingStatus: z.enum(["trial", "active", "past_due", "cancelled"]).optional(),
     trialDays: z.number().int().min(1).max(365).nullable().optional(),
     seatLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
+    seatOveragePolicy: z.enum(["hard", "soft"]).optional(),
   })
-  .refine((v) => Object.keys(v).length > 0, { message: "Provide plan, billingStatus, trialDays or seatLimit" });
+  .refine((v) => Object.keys(v).length > 0, {
+    message: "Provide plan, billingStatus, trialDays, seatLimit or seatOveragePolicy",
+  });
 
 /** Platform operators manage a tenant's subscription. */
 export const PATCH = route(

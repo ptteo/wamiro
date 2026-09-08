@@ -132,6 +132,8 @@ Gate: E2E — new company from invite to "employee clocks in" with zero docs.
 
 ### Phase 3 — Self-serve billing (~1–2 weeks)
 
+**Detailed plan:** `docs/implementation-plan-phase-3-billing.md` (in progress).
+
 1. **Paddle adapter** (merchant-of-record: global tax handled — best default) behind the existing `billingAdapter` seam in `src/modules/billing/`: checkout URL, webhook (sign-verified) → `billing_customer_id/subscription_id`, status map → trial/active/past_due/cancelled, invoice emails by provider.
 2. **Seats**: monthly per-seat billing recomputed from `activeSeatCount`; proration on mid-cycle invites (Paddle prepaid proration); overage policy flag: soft-cap (banner) vs hard-block (current).
 3. **Settings → Plan & Billing**: payment method (provider portal link), invoice history, plan comparison, cancel/downgrade with data-retention notice.
@@ -154,11 +156,13 @@ Gate: storage switch with zero broken download links (spot-check E2E), RLS on wi
 
 ### Phase 5 — Platform ops completion (~3 days)
 
-1. **Error tracking** — Sentry free tier (5k events/mo): `instrument.ts` hook, release tagging, alert rule → email.
-2. **Status page** — static `/status` page fed by the health endpoint (self-hosted, free) for customer trust.
-3. **Uptime + 5xx watch** — UptimeRobot on `/api/v1/health` + cron 5xx counter (doc exists in reliability.md).
-4. **Jobs dashboard** — platform console card reading `platform_job_runs` (last run, ok, failures per org) — makes the worker observable without SSH.
-5. **Audit transparency** — tenant-facing "My activity" page (own audit rows) + admin export (exists).
+**Detailed plan:** `docs/implementation-plan-phase-5-platform-ops.md`. Do not rebuild health, the jobs ledger, or admin audit export.
+
+1. **Error tracking** — **GlitchTip self-hosted** (~256 MB web process, unlimited events). Wamiro sends events only when `GLITCHTIP_DSN` is set; unset = journald only.
+2. **Status page** — dynamic public `/status` mirroring `GET /api/v1/health` components (db / storage / jobs). No per-job internals.
+3. **Uptime + 5xx** — UptimeRobot on `/api/v1/health/live` (process) and `/api/v1/health` (components 200/503). 5xx cron already in `reliability.md`; GlitchTip for exception email.
+4. **Jobs dashboard** — platform console card from existing `platform_job_runs` (one row per job name, not history). `detail.failures` only on per-org sweeps.
+5. **My activity** — `/settings/activity` (own audit rows). Admin `/admin/audit` + CSV already exists.
 
 ### Phase 6 — UX system & micro-interactions (~1–2 weeks, continuous)
 
@@ -221,7 +225,8 @@ From the scaling plan: load tests at 5× target, PgBouncer when pool saturation,
 | Lightsail 2 GB (your decision) | — | $12/mo (the one fixed cost) |
 | Brevo email | 300/day | invite/receipt traffic fine |
 | Cloudflare R2 | 10 GB + free egress | ~25k docs |
-| UptimeRobot / Sentry / GitHub Actions | 50 monitors / 5k errors / 2k min | plenty pre-100 companies |
+| UptimeRobot / GitHub Actions | 50 monitors / 2k min | plenty pre-100 companies |
+| GlitchTip (self-host) | unlimited events | ~256 MB web + Redis; use existing RDS. Do not co-locate on a 2 GB Lightsail with `next build` |
 | Tours, animations, toasts | self-built + CSS | $0, no deps |
 | Paddle | no fixed fee | 5% + 50¢ per transaction (revenue-linked) |
 | RDS | free 12 mo → ~$13/mo | Neon migration documented as fallback |

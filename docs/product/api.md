@@ -45,7 +45,7 @@ curl -b jar.txt https://host/api/v1/me
 | Communication | `GET/POST /announcements`, `GET/POST /discussions`, replies, acknowledgements, surveys, notifications read-all |
 | Analytics & AI | `GET /analytics`, `GET /dashboards`, `POST /ai/chat` |
 | Search | `GET /search?q=` — people, articles, documents, announcements, discussions |
-| Administration | users (+ detail, roles, session revoke), roles, overrides, delegations, audit, access-reviews, custom-fields, export datasets, Frappe sync, branding |
+| Administration | users (+ detail, roles, session revoke), roles, overrides, delegations, audit, access-reviews, custom-fields, export datasets, branding |
 | Health | `GET /health/live`, `GET /health/ready` (no auth) |
 
 ## Versioning

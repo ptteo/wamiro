@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { PlatformClient } from "@/components/platform-client";
 import { PlatformOpsClient } from "@/components/platform-ops-client";
+import { PlatformJobsCard } from "@/components/platform-jobs-card";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
@@ -13,6 +14,7 @@ import {
   platformSupportQueue,
   tenantRiskBoard,
 } from "@/modules/platform/console";
+import { listJobLedger } from "@/modules/platform/jobs";
 
 export const metadata = { title: "Platform" };
 
@@ -26,7 +28,7 @@ export default async function PlatformPage() {
     );
   }
 
-  const [tenants, stats, riskTenants, grants, queue, ledger, storage] = await Promise.all([
+  const [tenants, stats, riskTenants, grants, queue, ledger, storage, jobs] = await Promise.all([
     listTenants(ctx),
     platformStats(ctx),
     tenantRiskBoard(ctx),
@@ -34,6 +36,7 @@ export default async function PlatformPage() {
     platformSupportQueue(ctx),
     listImpersonationLedger(ctx),
     fleetStorage(ctx),
+    listJobLedger(ctx),
   ]);
 
   return (
@@ -89,6 +92,8 @@ export default async function PlatformPage() {
           endedAt: l.endedAt ? l.endedAt.toISOString() : null,
         }))}
       />
+
+      <PlatformJobsCard jobs={jobs} />
 
       <PlatformClient
         tenants={tenants.map((t) => ({

@@ -1272,6 +1272,21 @@ test(
         "cancelled tenants lose access at authentication",
       );
 
+      // Restore B so later tests (push, etc.) keep using the cached admin context.
+      await db
+        .update(schema.organizations)
+        .set({
+          billingStatus: "active",
+          plan: "starter",
+          billingProvider: null,
+          billingCustomerId: null,
+          billingSubscriptionId: null,
+          dunningStage: 0,
+          seatOveragePolicy: "hard",
+          seatLimit: null,
+        })
+        .where(eq(schema.organizations.id, B.orgId));
+
       // ---------- Phase D: white-label domains, push, shared rate limits ----------
       const [orgRowD] = await db
         .select({ slug: schema.organizations.slug })

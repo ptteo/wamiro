@@ -13,9 +13,9 @@ Memory budget on a 12 GB box:
 | Meilisearch / Paperless-ngx (optional later) | 1.0 GB |
 | OS + headroom | 10.3 GB |
 
-> Post-Phase-6 cutover: Frappe HR and Zammad are **no longer deployed** —
-> attendance, leave, payroll, and helpdesk run natively inside Wamiro.
-> Sections 4–5 moved to the historical appendix at the end of this file.
+> Attendance, leave, payroll, and helpdesk run natively inside Wamiro.
+> Do **not** install Zammad or Frappe HR. If an older box still has them,
+> run `sudo CONFIRM=yes bash scripts/remove-zammad-frappe.sh`.
 
 ## 1. Instance
 
@@ -96,66 +96,15 @@ curl -s https://wamiro.example.com/api/v1/health   # {"ok":true,"db":true}
 
 ---
 
-## Appendix A — Historical: Zammad + Frappe deployments (removed in Phase 6 cutover)
+## Leftover Zammad / Frappe HR
 
-The following sections describe the pre-cutover setup where Wamiro delegated
-helpdesk to Zammad and the HR employee master to Frappe HR. Both were removed
-in Phase 6 — the native `/tickets` module and the native people/payroll modules
-are the only implementation. Kept for historical record; do not reinstall.
-
-### A.1 Zammad (Docker Compose)
+Do not reinstall either product. If this VM still has `/opt/zammad` or
+`/opt/frappe-bench` from before the native-HR cutover:
 
 ```bash
-cd /opt && git clone https://github.com/zammad/zammad-docker-compose.git zammad
-cd zammad
-cp .env.example .env
-vi .env    # set POSTGRES_PASS, REDIS_PASSWORD, and ELASTICSEARCH_HEAP_SIZE=1g
-docker compose up -d
+cd /opt/wamiro
+sudo CONFIRM=yes bash scripts/remove-zammad-frappe.sh
 ```
 
-First start takes several minutes (migrations run automatically).
-Then in Zammad UI: Admin → Token Access → create an API token → put it plus
-`https://helpdesk.example.com` into Wamiro's `.env` as `ZAMMAD_BASE_URL` /
-`ZAMMAD_TOKEN` → `sudo systemctl restart wamiro`.
-
-Caddy:
-
-```
-helpdesk.example.com {
-    reverse_proxy localhost:8080
-}
-```
-
-(Compose exposes zammad-nginx on 8080.)
-
-### A.2 Frappe HR (bench install — interactive)
-
-```bash
-# prerequisites (MariaDB local, redis, python, node already present)
-sudo apt install -y mariadb-server redis-server libffi-dev libmariadb-dev pkg-config python3-dev
-sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'StrongMariaPass'; FLUSH PRIVILEGES;"
-pip3 install frappe-bench
-cd /opt && bench init frappe-bench --frappe-branch version-15
-cd frappe-bench
-bench new-site hr.example.com --db-root-password StrongMariaPass --admin-password StrongAdminPass
-bench get-app hrms --branch version-15
-bench --site hr.example.com install-app hrms
-bench setup nginx --yes || true        # optional; Caddy can proxy instead
-bench start                            # dev runner — use supervisor for prod:
-bench setup production                 # configures nginx+supervisor; disable nginx if using Caddy
-```
-
-Caddy (if bypassing Frappe's nginx):
-
-```
-hr.example.com {
-    reverse_proxy localhost:8000
-}
-```
-
-Create an API user in Frappe (API key/secret) with HR roles, then set in
-Wamiro's `.env`: `FRAPPE_BASE_URL=https://hr.example.com`,
-`FRAPPE_TOKEN=key:secret`. The Sync button appears under Admin.
-
-- Zammad volumes: back up Postgres DB (can live in RDS by creating a second
-  database there and editing compose envs) and /opt/zammad.
+The script stops those stacks, archives them under `/var/backups/`, and leaves
+Wamiro, Caddy, Node, and RDS alone. See `docs/deploy-lightsail.md` §9.

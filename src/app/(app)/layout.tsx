@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import Link from "next/link";
 
 import { AppGates } from "@/components/app-gates";
 import { TourMount } from "@/components/tour-mount";
@@ -140,6 +141,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="h-dvh">
       {impersonating ? (
         <ImpersonationBanner orgName={org.name} targetName={ctx.user.name} />
+      ) : null}
+      {ctx.org.billingStatus === "past_due" ? (
+        <div
+          role="status"
+          className="sticky top-0 z-[var(--z-sticky)] border-b border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm text-primary"
+        >
+          Payment for this workspace failed.{" "}
+          <Link href="/settings/billing" className="font-medium text-brand underline-offset-2 hover:underline">
+            Update billing
+          </Link>{" "}
+          to keep access.
+        </div>
       ) : null}
       <a
         href="#main"

@@ -29,6 +29,7 @@ import { syncOnboardingState } from "@/modules/org/policies";
 import { roleChecklists } from "@/modules/onboarding/checklists";
 import { getMergedPreferences } from "@/modules/prefs/service";
 import { can } from "@/modules/iam/engine";
+import { seatOverageNotice } from "@/modules/billing/service";
 import type {
   ActivityItem,
   ActivityKind,
@@ -205,6 +206,8 @@ export default async function HomePage() {
   const prefs = await getMergedPreferences(ctx.user.id, ctx.user.organizationId);
   const dismissed = (prefs.roleChecklist as { dismissed?: Record<string, string> } | undefined)?.dismissed ?? {};
   const checklists = (await roleChecklists(ctx)).filter((c) => !dismissed[c.role] && c.done < c.total);
+  const overage =
+    can(ctx.access, "settings.manage") ? await seatOverageNotice(ctx.user.organizationId) : null;
 
   const firstName = ctx.user.name.split(/\s+/)[0] ?? ctx.user.name;
   const now = new Date();
@@ -310,6 +313,15 @@ export default async function HomePage() {
 
   return (
     <div className="mx-auto w-full max-w-[1200px] space-y-8">
+      {overage ? (
+        <div className="rounded-lg border border-amber/40 bg-amber-subtle px-4 py-3 text-sm text-amber">
+          This workspace has {overage.activeSeats} people on a plan that includes {overage.seatLimit}. Extra seats
+          will appear on the next invoice.{" "}
+          <Link href="/settings/billing" className="font-medium underline-offset-2 hover:underline">
+            Review Plan & Billing
+          </Link>
+        </div>
+      ) : null}
       {/* ── Company setup checklist (admins only, until complete) ─────── */}
       {setup && setup.done < setup.total ? (
         <SetupChecklistCard steps={setup.steps} done={setup.done} total={setup.total} />

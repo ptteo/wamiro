@@ -9,6 +9,7 @@ import {
   ChevronUp,
   CircleHelp,
   CreditCard,
+  History,
   LogOut,
   RotateCcw,
   Shield,
@@ -262,6 +263,7 @@ export function WorkspaceSidebar({
         user={user}
         onOrg={pathname.startsWith("/settings/organization")}
         onSecurity={pathname.startsWith("/settings/security")}
+        onActivity={pathname.startsWith("/settings/activity")}
         onBilling={pathname.startsWith("/settings/billing")}
       />
     </>
@@ -272,11 +274,13 @@ function AccountMenu({
   user,
   onOrg,
   onSecurity,
+  onActivity,
   onBilling,
 }: {
   user: { name: string; email: string; roleLabel: string };
   onOrg: boolean;
   onSecurity: boolean;
+  onActivity: boolean;
   onBilling: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -363,6 +367,18 @@ function AccountMenu({
           >
             <Shield className="h-4 w-4" strokeWidth={1.75} />
             Security
+          </Link>
+          <Link
+            href="/settings/activity"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className={cx(
+              "flex h-9 items-center gap-2 px-3 text-[13px] font-medium",
+              onActivity ? "bg-brand-subtle text-brand-text" : "text-primary hover:bg-surface-hover",
+            )}
+          >
+            <History className="h-4 w-4" strokeWidth={1.75} />
+            My activity
           </Link>
           <Link
             href="/settings/billing"
