@@ -9,14 +9,18 @@ import { cx } from "@/lib/cx";
 export function Card({
   children,
   className,
+  lift,
 }: {
   children: React.ReactNode;
   className?: string;
+  /** Phase 6 §1: hover lift (1px + shadow) for cards that navigate. */
+  lift?: boolean;
 }) {
   return (
     <div
       className={cx(
         "rounded-lg border border-border-default bg-surface shadow-[0_1px_2px_rgba(16,24,40,0.04)]",
+        lift && "lift",
         className,
       )}
     >
@@ -62,14 +66,18 @@ const badgeTones = {
 export function Badge({
   children,
   tone = "neutral",
+  pop,
 }: {
   children: React.ReactNode;
   tone?: keyof typeof badgeTones;
+  /** Phase 6 §1: pop animation when the value changes — pass a changing key. */
+  pop?: boolean;
 }) {
   return (
     <span
       className={cx(
         "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        pop && "badge-pop",
         badgeTones[tone],
       )}
     >
@@ -275,7 +283,7 @@ export function Button({
       disabled={rest.disabled || loading}
       aria-busy={loading || undefined}
       className={cx(
-        "inline-flex items-center justify-center gap-2 rounded-md font-medium transition",
+        "press inline-flex items-center justify-center gap-2 rounded-md font-medium transition",
         "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus-ring)]",
         variant === "primary" && "bg-brand text-on-brand hover:bg-brand-hover active:bg-brand-active",
         variant === "secondary" &&

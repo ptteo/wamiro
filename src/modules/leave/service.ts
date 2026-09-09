@@ -23,6 +23,7 @@ import {
   employeeMayRequestCancel,
   employeeMayWithdraw,
 } from "@/modules/leave/cancel";
+import { projectBalance } from "@/modules/leave/accrual";
 
 const YEAR = new Date().getFullYear();
 
@@ -134,6 +135,8 @@ export interface ApplyInput {
   startDate: string; // YYYY-MM-DD
   endDate: string;
   reason?: string;
+  /** Phase 8 — half-day leave: 'first_half' | 'second_half'. */
+  halfDay?: "first_half" | "second_half";
 }
 
 function businessDays(startStr: string, endStr: string): number {
@@ -146,6 +149,8 @@ function businessDays(startStr: string, endStr: string): number {
   if (days > 365) throw ApiError.badRequest("Leave cannot exceed one year");
   return days;
 }
+
+const HALF_DAYS = new Set(["first_half", "second_half"]);
 
 /** Company holidays falling inside an inclusive date range (F3.4: not counted as leave days). */
 async function holidaysInRange(orgId: string, startStr: string, endStr: string): Promise<number> {
@@ -180,6 +185,14 @@ export async function apply(ctx: AuthContext, input: ApplyInput) {
   let days = businessDays(input.startDate, input.endDate);
   // company holidays inside the range are not charged leave days
   days -= await holidaysInRange(ctx.user.organizationId, input.startDate, input.endDate);
+  // Phase 8 — half-day: only valid on a single-day request; costs 0.5 days.
+  const halfDay = input.halfDay && HALF_DAYS.has(input.halfDay) ? input.halfDay : null;
+  if (halfDay) {
+    if (input.startDate !== input.endDate) {
+      throw ApiError.badRequest("Half-day leave must be a single date");
+    }
+    days = 0.5;
+  }
   if (days <= 0) throw ApiError.badRequest("That period contains only company holidays");
 
   // balance check (only when a balance row exists)
@@ -210,6 +223,8 @@ export async function apply(ctx: AuthContext, input: ApplyInput) {
       startDate: input.startDate,
       endDate: input.endDate,
       days: String(days),
+      halfDay,
+      halfDayDate: halfDay ? input.startDate : null,
       reason: input.reason ?? null,
     })
     .returning()

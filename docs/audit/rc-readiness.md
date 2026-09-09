@@ -1,6 +1,37 @@
 # Wamiro — Release-Candidate Readiness
 
-Status date: Phase 5 platform ops — core shipped (GlitchTip ingest, `/status`, jobs card, My activity).
+Status date: Phase 6 UX system & micro-interactions — shipped.
+
+## Closing verification (Phase 6)
+
+| Gate | Result |
+|---|---|
+| typecheck | clean |
+| lint | 0 errors |
+| unit tests | 99/99 (no new unit deps; Phase 6 is UI-only) |
+| isolation | unchanged — Phase 6 touched no API/service/db code paths |
+| build | `next build` |
+| a11y | contrast audit: primary/secondary/danger pass ≥4.5:1; tertiary (4.29) + brand-on-subtle (3.7–3.85) used only at large/semibold sizes (AA large-text); disabled exempt per WCAG 1.4.3. Skip-link, focus-visible rings, aria-live toasts verified. |
+| reduced-motion | global `prefers-reduced-motion` override collapses every new animation (toasts, stagger, confetti, check-draw, palette) |
+| path | any page: ⌘K or `/` → palette; Home → clock in (toast + first-time check); mobile <768px → bottom nav 5 workspaces ≥44px; notifications → optimistic read w/ rollback; payroll (paid slip) → once-only confetti |
+
+New primitives (feature code SHOULD use these, not ad-hoc patterns):
+- `toast.success/error/info/undoable/retryable` (`components/toaster.tsx`)
+- `usePendingAction` / `OptimisticToggle` (`components/feedback.tsx`)
+- `ListLoading` / `StatGridLoading` / `BoardLoading` (`components/loading.tsx`)
+- `lift` / `press` / `stagger-enter` / `badge-pop` CSS classes + `--dur-*`/`--ease` tokens (`globals.css`)
+- `shouldCelebrate` / `burstConfetti` / `CheckBurst` (`components/delight.tsx`) — once-per-user only
+
+## Closing verification (Phase 7)
+
+| Gate | Result |
+|---|---|
+| typecheck | clean |
+| lint | 0 errors |
+| build | `next build` |
+| isolation | unchanged — nav model only; no API/service/db changes |
+| path | sidebar: Knowledge → Articles/Documents/HR Docs; Facilities & IT → Rooms + Assets; Admin → GRC → Governance; ⌘K → "Ask AI" prefills the assistant composer |
+| rail | 12 workspaces declared, 14→11-12 visible depending on permissions (was 14) |
 
 ## Closing verification (Phase 5)
 

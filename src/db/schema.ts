@@ -137,6 +137,12 @@ export const organizations = pgTable(
     /** Phase 4 GDPR — staged deletion: set when the admin requests it; the
      * jobs sweep purges the tenant after the 7-day undo window. */
     deletionRequestedAt: timestamp("deletion_requested_at", { withTimezone: true }),
+    /** Phase 8 — auto-clockout policy: close open shifts after N hours (null = off). */
+    autoClockoutHours: integer("auto_clockout_hours"),
+    /** Phase 8 — overtime policy: minutes beyond this daily total count as OT (null = off). */
+    overtimeDailyMinutes: integer("overtime_daily_minutes"),
+    /** Phase 8 — auto-close resolved tickets after N days (null = off). */
+    autoCloseResolvedDays: integer("auto_close_resolved_days"),
     // Plain uuid, no FK reference: organizations is defined before users in
     // this file, and a back-reference would create a type inference cycle.
     // The FK lives in the migration (0058) instead.
@@ -813,6 +819,8 @@ export const attendanceRecords = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     clockIn: timestamp("clock_in", { withTimezone: true }).notNull().defaultNow(),
     clockOut: timestamp("clock_out", { withTimezone: true }),
+    /** Phase 8 — closed by the auto-clockout policy sweep, not the user. */
+    autoClosed: boolean("auto_closed").notNull().default(false),
     source: text("source").notNull().default("web"),
     note: text("note"),
     shiftTypeId: uuid("shift_type_id").references(() => shiftTypes.id, {
@@ -844,6 +852,12 @@ export const leaveTypes = pgTable(
     paid: boolean("paid").notNull().default(true),
     /** Frappe parity: when true, the annual quota is granted automatically on hire and each new year. */
     autoAllocate: boolean("auto_allocate").notNull().default(false),
+    /** Phase 8 — monthly accrual (days/month); null = grant quota upfront. */
+    accrualPerMonth: numeric("accrual_per_month", { precision: 5, scale: 2 }),
+    /** Phase 8 — max unused days carried into the next year; null = no carry-over. */
+    carryForwardCap: numeric("carry_forward_cap", { precision: 5, scale: 1 }),
+    /** Phase 8 — max days encashable per year; null = org-level policy applies. */
+    encashmentCapDays: numeric("encashment_cap_days", { precision: 5, scale: 1 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -893,6 +907,10 @@ export const leaveRequests = pgTable(
     startDate: date("start_date").notNull(),
     endDate: date("end_date").notNull(),
     days: numeric("days", { precision: 5, scale: 1 }).notNull(),
+    /** Phase 8 — 'full' (default) | 'first_half' | 'second_half'. */
+    halfDay: text("half_day"),
+    /** Phase 8 — the specific date the half-day applies to. */
+    halfDayDate: date("half_day_date"),
     reason: text("reason"),
     status: leaveStatusEnum("status").notNull().default("pending"),
     reviewedBy: uuid("reviewed_by").references(() => users.id, {
@@ -925,6 +943,12 @@ export const announcements = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull(),
     audience: text("audience").notNull().default("company"),
+    /** Phase 8 — department targeting when audience = 'department'. */
+    departmentId: uuid("department_id").references((): AnyPgColumn => departments.id, {
+      onDelete: "cascade",
+    }),
+    /** Phase 8 — future publish time; drafts with a future date are hidden until due. */
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
     publishedAt: timestamp("published_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -952,6 +976,8 @@ export const notifications = pgTable(
     body: text("body"),
     link: text("link"),
     readAt: timestamp("read_at", { withTimezone: true }),
+    /** Phase 8 — thread grouping key for mute/digest (entity id when present). */
+    threadKey: text("thread_key"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -959,6 +985,7 @@ export const notifications = pgTable(
   (t) => [
     index("notifications_user_created_idx").on(t.userId, t.createdAt),
     index("notifications_unread_idx").on(t.userId).where(sql`read_at IS NULL`),
+    index("notifications_thread_idx").on(t.userId, t.threadKey),
   ],
 );
 
@@ -1046,6 +1073,10 @@ export const documents = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     /** 'company' | 'policy' | 'personal' */
     category: text("category").notNull().default("company"),
+    /** Phase 8 — folder grouping (free-form label, 'General' default). */
+    folder: text("folder").notNull().default("General"),
+    /** Phase 8 — after this date the doc counts as stale (expiry reminders). */
+    expiresAt: date("expires_at"),
     /** For personal docs: whose document it is */
     ownerUserId: uuid("owner_user_id").references(() => users.id, {
       onDelete: "cascade",
@@ -1080,6 +1111,12 @@ export const knowledgeArticles = pgTable(
     /** Markdown-ish plain text; rendered as pre-wrap text in v1 */
     body: text("body").notNull(),
     tags: text("tags").array().notNull().default(sql`ARRAY[]::text[]`),
+    /** Phase 8 — 'company' (default) | 'department'. */
+    visibility: text("visibility").notNull().default("company"),
+    /** Phase 8 — when visibility = 'department', restrict to this one. */
+    departmentId: uuid("department_id").references((): AnyPgColumn => departments.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1088,6 +1125,46 @@ export const knowledgeArticles = pgTable(
       .defaultNow(),
   },
   (t) => [index("knowledge_org_created_idx").on(t.organizationId, t.createdAt)],
+);
+
+/** Phase 8 — immutable article snapshots written on every update. */
+export const knowledgeVersions = pgTable(
+  "knowledge_versions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    articleId: uuid("article_id")
+      .notNull()
+      .references(() => knowledgeArticles.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    tags: text("tags").array().notNull().default(sql`ARRAY[]::text[]`),
+    editorUserId: uuid("editor_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("knowledge_versions_article_idx").on(t.articleId, t.createdAt)],
+);
+
+/** Phase 8 — one helpful-vote per user per article. */
+export const knowledgeVotes = pgTable(
+  "knowledge_votes",
+  {
+    articleId: uuid("article_id")
+      .notNull()
+      .references(() => knowledgeArticles.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    helpful: boolean("helpful").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.articleId, t.userId] })],
 );
 
 // ---------- work: projects & tasks ----------
@@ -1152,6 +1229,12 @@ export const tasks = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     dueDate: date("due_date"),
+    /** Phase 8 — 'daily' | 'weekly' | 'monthly'; null = one-off. */
+    recurrence: text("recurrence"),
+    /** Phase 8 — next spawn date for recurring tasks. */
+    recurrenceNextDate: date("recurrence_next_date"),
+    /** Phase 8 — planned completion date snapshot for baselines/delay analytics. */
+    projectedDueDate: date("projected_due_date"),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -1181,6 +1264,8 @@ export const holidays = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     date: date("date").notNull(),
+    /** Phase 8 — optional location tag for per-location calendars (null = all). */
+    location: text("location"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1336,6 +1421,9 @@ export const assets = pgTable(
     assignedToUserId: uuid("assigned_to_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    /** Phase 8 — warranty expiry (reminder job). */
+    warrantyExpiresAt: date("warranty_expires_at"),
+    warrantyNotifiedAt: timestamp("warranty_notified_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1344,6 +1432,30 @@ export const assets = pgTable(
     index("assets_org_idx").on(t.organizationId),
     index("assets_assignee_idx").on(t.assignedToUserId),
   ],
+);
+
+/** Phase 8 — asset check-in/check-out history. */
+export const assetEvents = pgTable(
+  "asset_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    assetId: uuid("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    /** 'created' | 'assigned' | 'returned' */
+    eventType: text("event_type").notNull(),
+    /** subject of the event (assignee) */
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("asset_events_asset_idx").on(t.assetId, t.createdAt)],
 );
 
 // ---------- dashboards (BI-lite) ----------
@@ -1716,6 +1828,11 @@ export const ticketGroups = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
+    /** Phase 8 — per-group SLA overrides keyed by priority (hours). */
+    slaResolutionHours: jsonb("sla_resolution_hours").$type<Record<string, number>>(),
+    slaFirstResponseHours: jsonb("sla_first_response_hours").$type<Record<string, number>>(),
+    /** Phase 8 — business-hours calendar: { days: number[], start: "09:00", end: "17:00", tz?: string }. */
+    businessHours: jsonb("business_hours").$type<BusinessHours | null>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2601,6 +2718,8 @@ export const employeeDocuments = pgTable(
     mimeType: text("mime_type"),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
     expiresAt: date("expires_at"),
+    /** Phase 8 — guards the one-time expiry reminder notification. */
+    expiryNotifiedAt: timestamp("expiry_notified_at", { withTimezone: true }),
     uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2682,6 +2801,8 @@ export const salaryComponents = pgTable(
     amountType: text("amount_type").notNull().default("fixed"), // fixed | percent_of_basic
     defaultAmount: numeric("default_amount", { precision: 14, scale: 2 }).notNull().default("0"),
     isTaxable: boolean("is_taxable").notNull().default(true),
+    /** Phase 8 — display/reporting group for tax components (config-only). */
+    taxGroup: text("tax_group"),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2746,6 +2867,8 @@ export const payrollRuns = pgTable(
     periodEnd: date("period_end").notNull(),
     status: text("status").notNull().default("draft"), // draft | submitted | approved | paid
     currency: text("currency").notNull().default("USD"),
+    /** Phase 8 — 'monthly' | 'semi_monthly' (display + scheduling metadata). */
+    schedule: text("schedule").notNull().default("monthly"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     submittedBy: uuid("submitted_by").references(() => users.id, { onDelete: "set null" }),
@@ -2765,6 +2888,79 @@ export interface PayslipLine {
   component: string;
   amount: number;
 }
+
+/** Phase 8 — business-hours calendar for ticket SLAs (per ticket group). */
+export interface BusinessHours {
+  /** ISO weekday numbers active (1=Mon … 7=Sun). Empty = 24×7. */
+  days: number[];
+  start: string; // "09:00"
+  end: string; // "17:00"
+  tz?: string;
+}
+
+/** Phase 8 — salary arrears: out-of-run adjustments recovered on next compute. */
+export const payrollArrears = pgTable(
+  "payroll_arrears",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeUserId: uuid("employee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    reason: text("reason"),
+    status: text("status").notNull().default("pending"), // pending | applied
+    appliedRunId: uuid("applied_run_id").references(() => payrollRuns.id, { onDelete: "set null" }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("payroll_arrears_org_idx").on(t.organizationId, t.status),
+    index("payroll_arrears_employee_idx").on(t.organizationId, t.employeeUserId),
+  ],
+);
+
+/** Phase 8 — project baseline snapshots for schedule-drift analytics. */
+export const projectBaselines = pgTable(
+  "project_baselines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    label: text("label").notNull().default("Baseline"),
+    dueDate: date("due_date"),
+    taskCount: integer("task_count").notNull().default(0),
+    estimatedMinutes: integer("estimated_minutes").notNull().default(0),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("project_baselines_project_idx").on(t.projectId)],
+);
+
+/** Phase 8 — rule-based finance approval chains per amount threshold. */
+export const financeApprovalThresholds = pgTable(
+  "finance_approval_thresholds",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    minAmountCents: integer("min_amount_cents").notNull().default(0),
+    /** null = no upper bound */
+    maxAmountCents: integer("max_amount_cents"),
+    /** 'company' (default) | 'manager' — manager routes to requester's manager. */
+    approverMode: text("approver_mode").notNull().default("company"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("finance_thresholds_org_idx").on(t.organizationId)],
+);
 
 export const payslips = pgTable(
   "payslips",

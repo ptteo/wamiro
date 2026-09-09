@@ -122,9 +122,131 @@
   --z-drawer: 1200;
   --z-modal: 1300;
   --z-toast: 1400;
+
+  /* ── Phase 6 motion system ────────────────────────────────────────────
+   * Durations + the one approved easing curve. Every animated surface in the
+   * product reads these — no bespoke durations in feature code. */
   --dur-fast: 120ms;
   --dur: 180ms;
+  --dur-slow: 280ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Standardized interaction geometry (hover lift = 1px + shadow, press = .98). */
+  --lift-shadow: 0 2px 8px rgba(16, 24, 40, 0.08);
+  --press-scale: 0.98;
 }
+
+/* ── Motion utilities (Phase 6 §1) ──────────────────────────────────────
+ * opt-in classes feature code composes; all respect reduced-motion via the
+ * global override below. */
+
+/* Hover lift: 1px rise + soft shadow. Use on cards/rows that navigate. */
+.lift {
+  transition:
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+.lift:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--lift-shadow);
+}
+.lift:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* Button/tile press feedback — scale down while pressed. */
+.press {
+  transition: transform var(--dur-fast) var(--ease);
+}
+.press:active:not(:disabled) {
+  transform: scale(var(--press-scale));
+}
+
+/* Slide+fade entrance for drawers/sheets/toasts. Pairs with [data-state]. */
+.slide-fade {
+  transition:
+    transform var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+/* Card enter stagger: set --stagger-i on each child (0,1,2…). */
+.stagger-enter {
+  animation: enter-rise var(--dur-slow) var(--ease) both;
+  animation-delay: calc(min(var(--stagger-i, 0), 8) * 20ms);
+}
+@keyframes enter-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Badge pop when its value changes — add .badge-pop on render keyed by value. */
+.badge-pop {
+  animation: badge-pop var(--dur) var(--ease);
+}
+@keyframes badge-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Tab underline slide — a shared underline element animated between tabs.
+ * Layout: parent is relative; indicator positioned via inline transform. */
+.tab-underline {
+  position: absolute;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 9999px;
+  background: var(--brand);
+  transition:
+    transform var(--dur) var(--ease),
+    width var(--dur) var(--ease);
+}
+
+/* Tab underline slide — a shared underline element animated between tabs.
+ * Layout: parent is relative; indicator positioned via inline transform. */
+@keyframes check-draw {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.check-draw path {
+  stroke-dasharray: 24;
+  animation: check-draw 400ms var(--ease) forwards;
+}
+
+@keyframes confetti-fall {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, -8px, 0) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--dx, 0px), 64px, 0) rotate(var(--rot, 180deg));
+  }
+}
+.confetti-piece {
+  animation: confetti-fall 900ms var(--ease) forwards;
+}
+
+/* Delight animations always collapse under reduced motion (below). */
 
 /* Expose tokens as Tailwind utilities: bg-surface, text-secondary, border-default … */
 @theme inline {

@@ -2,6 +2,8 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { AppGates } from "@/components/app-gates";
+import { BottomNav } from "@/components/bottom-nav";
+import { Toaster } from "@/components/toaster";
 import { TourMount } from "@/components/tour-mount";
 import { ImpersonationBanner } from "@/components/impersonation-banner";
 import { LogoutButton } from "@/components/logout-button";
@@ -9,6 +11,7 @@ import {
   ActiveWorkspaceLabel,
   MobileWorkspaceMenu,
 } from "@/components/mobile-nav";
+import { PaletteOpenButton } from "@/components/command-palette";
 import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import { requireAuthPage } from "@/lib/page-auth";
 import {
@@ -203,6 +206,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
+              <PaletteOpenButton />
               <MobileWorkspaceMenu workspaces={shellWorkspaces} />
               <LogoutButton compact />
             </span>
@@ -210,16 +214,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
           <main
             id="main"
-            className="mx-auto flex w-full min-h-0 min-w-0 max-w-5xl flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6 sm:py-8 has-[[data-fill-workspace]]:max-w-none has-[[data-fill-workspace]]:overflow-hidden has-[[data-fill-workspace]]:px-0 has-[[data-fill-workspace]]:py-0"
+            className="mx-auto flex w-full min-h-0 min-w-0 max-w-5xl flex-1 flex-col overflow-y-auto px-4 py-6 pb-20 sm:px-6 sm:py-8 md:pb-6 has-[[data-fill-workspace]]:max-w-none has-[[data-fill-workspace]]:overflow-hidden has-[[data-fill-workspace]]:px-0 has-[[data-fill-workspace]]:py-0"
           >
             <AppGates
               mfaRequired={needsMfaSetup(ctx)}
               onboardingIncomplete={!onboardingComplete(org.onboardingState)}
             >
-              {children}
+              <Toaster>{children}</Toaster>
             </AppGates>
             <TourMount />
           </main>
+          {/* Phase 6 §7 — mobile bottom nav: first 5 workspaces, ≥44px targets */}
+          <BottomNav workspaces={shellWorkspaces} />
         </div>
       </div>
     </div>

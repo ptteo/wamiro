@@ -65,7 +65,10 @@ function SidebarLink({
       {icon}
       <span className="min-w-0 truncate">{label}</span>
       {badge ? (
-        <span className="ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-on-brand">
+        <span
+          key={badge}
+          className="badge-pop ml-auto rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-on-brand"
+        >
           {badge > 9 ? "9+" : badge}
         </span>
       ) : null}

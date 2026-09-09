@@ -2,17 +2,62 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, ListChecks } from "lucide-react";
 
 import type { RoleChecklist } from "@/modules/onboarding/checklists";
+import { burstConfetti, shouldCelebrate } from "@/components/delight";
+import { toast } from "@/components/toaster";
 import { btn } from "./ui";
+
+const PROGRESS_KEY = "wamiro-checklist-progress";
+
+function readProgress(): Record<string, number> {
+  try {
+    return JSON.parse(localStorage.getItem(PROGRESS_KEY) ?? "{}") as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
 
 export function RoleChecklistCard({ checklists }: { checklists: RoleChecklist[] }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const visible = checklists.filter((c) => c.done < c.total);
-  if (visible.length === 0) return null;
+
+  // Phase 6 §8 — checklist completion confetti: fires when the server-side
+  // done count reaches total (remembered per browser so the moment isn't
+  // cheapened by replays).
+  const prevDone = useRef(readProgress());
+  useEffect(() => {
+    const progress = { ...prevDone.current };
+    let changed = false;
+    for (const c of checklists) {
+      const wasComplete = (prevDone.current[c.role] ?? 0) >= c.total;
+      if (c.done >= c.total && !wasComplete && c.total > 0) {
+        if (shouldCelebrate(`checklist-complete-${c.role}`)) {
+          burstConfetti();
+          toast.success(
+            c.role === "manager"
+              ? "Manager checklist complete — nice work!"
+              : "Checklist complete — you're all set!",
+          );
+        }
+      }
+      if (progress[c.role] !== c.done) {
+        progress[c.role] = c.done;
+        changed = true;
+      }
+    }
+    if (changed) {
+      prevDone.current = progress;
+      try {
+        localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+      } catch {
+        /* noop */
+      }
+    }
+  }, [checklists]);
 
   async function dismiss(role: RoleChecklist["role"]) {
     setBusy(role);
@@ -37,8 +82,12 @@ export function RoleChecklistCard({ checklists }: { checklists: RoleChecklist[] 
 
   return (
     <div className="space-y-3" data-tour="home-next">
-      {visible.map((c) => (
-        <section key={c.role} className="rounded-xl border border-border-default bg-surface p-4 sm:p-5">
+      {visible.map((c, i) => (
+        <section
+          key={c.role}
+          className="stagger-enter rounded-xl border border-border-default bg-surface p-4 sm:p-5"
+          style={{ "--stagger-i": i } as React.CSSProperties}
+        >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">

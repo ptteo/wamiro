@@ -9,6 +9,7 @@ import {
   employees,
   leaveEncashments,
   payslips,
+  payrollArrears,
   payrollRuns,
   salaryComponents,
   salaryStructures,
@@ -523,6 +524,68 @@ async function prorationFactor(orgId: string, employeeUserId: string, startIso: 
   });
 }
 
+/**
+ * Phase 8 — pending arrears for an employee. Marked applied when the run is
+ * computed (see `markArrearsApplied` called from computeRun).
+ */
+async function pendingArrearsInPeriod(orgId: string, employeeUserId: string): Promise<number> {
+  const rows = await db
+    .select({ amount: payrollArrears.amount })
+    .from(payrollArrears)
+    .where(
+      and(
+        eq(payrollArrears.organizationId, orgId),
+        eq(payrollArrears.employeeUserId, employeeUserId),
+        eq(payrollArrears.status, "pending"),
+      ),
+    );
+  return rows.reduce((s, r) => s + Number(r.amount), 0);
+}
+
+/** Stamp an employee's pending arrears as applied by a run (recompute-safe). */
+export async function markArrearsApplied(orgId: string, runId: string, employeeUserId: string): Promise<void> {
+  await db
+    .update(payrollArrears)
+    .set({ status: "applied", appliedRunId: runId })
+    .where(
+      and(
+        eq(payrollArrears.organizationId, orgId),
+        eq(payrollArrears.employeeUserId, employeeUserId),
+        eq(payrollArrears.status, "pending"),
+      ),
+    );
+}
+
+/** Create an arrears adjustment (payroll.manage) — recovered on next compute. */
+export async function createArrears(
+  ctx: AuthContext,
+  input: { employeeUserId: string; amount: number; reason?: string },
+) {
+  await ensureManage(ctx);
+  if (!(input.amount > 0)) throw ApiError.badRequest("Arrears amount must be positive");
+  const row = first(
+    await db
+      .insert(payrollArrears)
+      .values({
+        organizationId: ctx.user.organizationId,
+        employeeUserId: input.employeeUserId,
+        amount: String(round2(input.amount)),
+        reason: input.reason?.slice(0, 300) ?? null,
+        createdBy: ctx.user.id,
+      })
+      .returning(),
+  );
+  await audit({
+    organizationId: ctx.user.organizationId,
+    actorUserId: ctx.user.id,
+    action: "PAYROLL_ARREARS_CREATED",
+    entityType: "payroll_arrears",
+    entityId: row.id,
+    newValue: { amount: input.amount, employee: input.employeeUserId },
+  });
+  return row;
+}
+
 async function encashmentsInPeriod(orgId: string, employeeUserId: string, startIso: string, endIso: string): Promise<number> {
   const rows = await db
     .select({ amount: leaveEncashments.amount })
@@ -563,7 +626,12 @@ export async function computePayslipFor(
   const advance = await advancesInPeriod(orgId, employeeUserId, periodStart, periodEnd);
   const deductions = [...values.deductions];
   if (advance > 0) deductions.push({ component: "Salary advance", amount: round2(advance) });
-  const totalDeductions = round2(values.totalDeductions + advance);
+
+  // Phase 8: pending arrears (out-of-run adjustments) are recovered here too.
+  const arrears = await pendingArrearsInPeriod(orgId, employeeUserId);
+  if (arrears > 0) deductions.push({ component: "Arrears", amount: round2(arrears) });
+
+  const totalDeductions = round2(values.totalDeductions + advance + arrears);
   const net = round2(gross - totalDeductions);
   if (net <= 0) {
     throw ApiError.badRequest(
@@ -638,7 +706,7 @@ function monthLabel(dateIso: string): string {
 
 export async function createRun(
   ctx: AuthContext,
-  input: { periodStart: string; periodEnd: string; periodLabel?: string; currency?: string },
+  input: { periodStart: string; periodEnd: string; periodLabel?: string; currency?: string; schedule?: string },
 ) {
   await ensureManage(ctx);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.periodStart) || !/^\d{4}-\d{2}-\d{2}$/.test(input.periodEnd)) {
@@ -648,6 +716,7 @@ export async function createRun(
   const days = (Date.parse(input.periodEnd) - Date.parse(input.periodStart)) / 86_400_000 + 1;
   if (days > 62) throw ApiError.badRequest("A run cannot span more than 62 days");
   const currency = input.currency ?? "USD";
+  const schedule = input.schedule === "semi_monthly" ? "semi_monthly" : "monthly";
 
   const row = first(
     await db
@@ -658,6 +727,7 @@ export async function createRun(
         periodStart: input.periodStart,
         periodEnd: input.periodEnd,
         currency,
+        schedule,
         createdBy: ctx.user.id,
       })
       .returning(),
@@ -734,6 +804,11 @@ export async function computeRun(ctx: AuthContext, runId: string): Promise<{ cou
       })),
     );
   });
+  // Phase 8 — arrears consumed by this compute (recompute of the same draft
+  // run is safe: the stamp is idempotent per employee+run).
+  for (const calc of payloads) {
+    await markArrearsApplied(orgId, runId, calc.employeeUserId);
+  }
   const count = payloads.length;
   await audit({
     organizationId: orgId,

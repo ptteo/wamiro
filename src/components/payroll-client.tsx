@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Banknote,
@@ -11,9 +11,12 @@ import {
   Layers,
   Plus,
   Receipt,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 
+import { burstConfetti, shouldCelebrate } from "@/components/delight";
+import { toast } from "@/components/toaster";
 import { Button } from "./ui";
 import { cx } from "@/lib/cx";
 
@@ -115,7 +118,12 @@ function PayslipView({ p, compact }: { p: PayslipDto; compact?: boolean }) {
       {!compact && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-sm font-semibold text-primary">{p.periodLabel} — payslip</p>
+            <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+              {p.periodLabel} — payslip
+              {p.runStatus === "paid" ? (
+                <Sparkles className="h-3.5 w-3.5 text-warning" strokeWidth={1.75} aria-hidden />
+              ) : null}
+            </p>
             {p.employeeName ? <p className="text-xs text-tertiary">{p.employeeName}</p> : null}
           </div>
           <span className={cx("rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize", STATUS_TONE[p.runStatus])}>
@@ -180,11 +188,48 @@ function RunDetailPane({ detail }: { detail: RunDetailDto | undefined }) {
   );
 }
 
+const PAID_SEEN_KEY = "wamiro-payslip-paid-runs";
+
+function readPaidSeen(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(PAID_SEEN_KEY) ?? "[]") as string[];
+  } catch {
+    return [];
+  }
+}
+
 export function PayrollClient({ data }: { data: PayrollData }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+
+  // Phase 6 §8 — payslip-ready: when one of MY payslips first appears as
+  // `paid`, celebrate once (confetti + toast). Tracked by payslip id in
+  // localStorage so revisits never re-fire.
+  const seenRef = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (seenRef.current === null) seenRef.current = readPaidSeen();
+    const paidMine = data.mine.filter((p) => p.runStatus === "paid");
+    const fresh = paidMine.filter((p) => !seenRef.current!.includes(p.id));
+    if (fresh.length > 0 && shouldCelebrate(`payslip-paid-${fresh[0]!.id}`)) {
+      burstConfetti();
+      toast.success(
+        fresh.length === 1
+          ? `${fresh[0]!.periodLabel} payslip is ready`
+          : `${fresh.length} new payslips are ready`,
+      );
+    }
+    if (paidMine.length > 0) {
+      const merged = [...new Set([...(seenRef.current ?? []), ...paidMine.map((p) => p.id)])];
+      seenRef.current = merged;
+      try {
+        localStorage.setItem(PAID_SEEN_KEY, JSON.stringify(merged.slice(-100)));
+      } catch {
+        /* noop */
+      }
+    }
+  }, [data.mine]);
 
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [runDetails, setRunDetails] = useState<Record<string, RunDetailDto>>({});

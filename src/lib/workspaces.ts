@@ -218,22 +218,14 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         href: "/payroll",
         icon: Wallet,
         permissions: ["payroll.view_self", "payroll.manage"],
-        group: "Payroll & Documents",
+        group: "Payroll",
       },
       {
         label: "Advances",
         href: "/payroll/advances",
         icon: Wallet,
         permissions: ["payroll.view_self", "payroll.manage"],
-        group: "Payroll & Documents",
-      },
-      {
-        label: "HR Documents",
-        href: "/people/documents",
-        icon: FileText,
-        module: "people",
-        permissions: ["documents.view"],
-        group: "Payroll & Documents",
+        group: "Payroll",
       },
       {
         label: "Performance",
@@ -311,16 +303,16 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
     label: "Knowledge",
     icon: BookOpen,
     defaultRoute: "/knowledge",
+    // Phase 7 (§2.2): content lives together — Articles / Documents / HR Docs
+    // in one workspace (Notion/Confluence convention). A workspace appears
+    // only if at least one item survives gating, so orgs without the
+    // documents module still see plain Knowledge.
     requiredModules: ["knowledge"],
-    sidebar: [{ label: "All Articles", href: "/knowledge", icon: BookOpen, module: "knowledge", permissions: ["knowledge.view"] }],
-  },
-  documents: {
-    id: "documents",
-    label: "Documents",
-    icon: FileText,
-    defaultRoute: "/documents",
-    requiredModules: ["documents"],
-    sidebar: [{ label: "All Documents", href: "/documents", icon: FileText, module: "documents", permissions: ["documents.view"] }],
+    sidebar: [
+      { label: "Articles", href: "/knowledge", icon: BookOpen, module: "knowledge", permissions: ["knowledge.view"], group: "Content" },
+      { label: "Documents", href: "/documents", icon: FileText, module: "documents", permissions: ["documents.view"], group: "Content" },
+      { label: "HR Documents", href: "/people/documents", icon: FileText, module: "people", permissions: ["documents.view"], group: "Content" },
+    ],
   },
   company: {
     id: "company",
@@ -332,32 +324,19 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
       { label: "Discussions", href: "/discussions", icon: MessageSquare, module: "announcements", permissions: ["employees.view"] },
       { label: "Surveys & Polls", href: "/surveys", icon: ListChecks, permissions: ["employees.view"] },
       { label: "Acknowledgements", href: "/acknowledgements", icon: PenLine, module: "announcements", permissions: ["employees.view"] },
-      {
-        label: "Governance",
-        href: "/governance",
-        icon: Scale,
-        module: "governance",
-        permissions: ["governance.view"],
-      },
     ],
   },
-  workplace: {
-    id: "workplace",
-    label: "Workplace",
+  facilities: {
+    // Phase 7 (§2.2): Assets + Workplace merge into Facilities & IT
+    // (Freshservice/Officevibe "physical ops" grouping).
+    id: "facilities",
+    label: "Facilities & IT",
     icon: Armchair,
     defaultRoute: "/workplace",
-    requiredModules: ["workplace"],
     sidebar: [
-      { label: "Rooms & Bookings", href: "/workplace", icon: Armchair, module: "workplace", permissions: ["workplace.view", "workplace.book"] },
+      { label: "Rooms & Bookings", href: "/workplace", icon: Armchair, module: "workplace", permissions: ["workplace.view", "workplace.book"], group: "Facilities" },
+      { label: "Assets", href: "/assets", icon: Package, module: "assets", permissions: ["assets.view_self"], group: "IT & Equipment" },
     ],
-  },
-  assets: {
-    id: "assets",
-    label: "Assets",
-    icon: Package,
-    defaultRoute: "/assets",
-    requiredModules: ["assets"],
-    sidebar: [{ label: "Assets", href: "/assets", icon: Package, module: "assets", permissions: ["assets.view_self"] }],
   },
   finance: {
     id: "finance",
@@ -412,6 +391,16 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         module: "admin",
         permissions: ["users.manage", "roles.manage", "audit.view"],
         group: "Console",
+      },
+      {
+        // Phase 7 (§2.2): GRC is an admin function in BambooHR/LogicGate-class
+        // tools — moved out of Company.
+        label: "Governance",
+        href: "/governance",
+        icon: Scale,
+        module: "governance",
+        permissions: ["governance.view"],
+        group: "GRC",
       },
       {
         label: "Users",
@@ -497,10 +486,8 @@ export const RAIL_ORDER = [
   "requests",
   "support",
   "knowledge",
-  "documents",
   "company",
-  "workplace",
-  "assets",
+  "facilities",
   "finance",
   "analytics",
   "ai",

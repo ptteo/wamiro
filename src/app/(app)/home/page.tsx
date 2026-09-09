@@ -542,10 +542,10 @@ function AttentionSection({ items }: { items: AttentionItem[] }) {
       <SectionHeader title="Needs your attention" />
       <ul className="mt-3 space-y-2">
         {items.map((a, i) => (
-          <li key={`${a.kind}:${i}`}>
+          <li key={`${a.kind}:${i}`} className="stagger-enter" style={{ "--stagger-i": i } as React.CSSProperties}>
             <Link
               href={a.href}
-              className="group flex items-center gap-3 rounded-md border border-border-subtle bg-surface px-4 py-3 transition hover:border-border-default hover:shadow-[0_1px_3px_rgba(16,24,40,0.06)]"
+              className="lift group flex items-center gap-3 rounded-md border border-border-subtle bg-surface px-4 py-3"
             >
               <span
                 className={[

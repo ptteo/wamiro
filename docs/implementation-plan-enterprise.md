@@ -164,7 +164,18 @@ Gate: storage switch with zero broken download links (spot-check E2E), RLS on wi
 4. **Jobs dashboard** — platform console card from existing `platform_job_runs` (one row per job name, not history). `detail.failures` only on per-org sweeps.
 5. **My activity** — `/settings/activity` (own audit rows). Admin `/admin/audit` + CSV already exists.
 
-### Phase 6 — UX system & micro-interactions (~1–2 weeks, continuous)
+### Phase 6 — UX system & micro-interactions — **SHIPPED 2026-09-09**
+
+All 8 items implemented. Gate: lint/typecheck/tests/build green; WCAG AA contrast audit documented in `docs/audit/rc-readiness.md`.
+
+1. **Motion system** ✅ — `--dur-fast/--dur/--dur-slow` + `--ease cubic-bezier(.2,.8,.2,1)` tokens and utility classes (`lift`, `press`, `slide-fade`, `stagger-enter`, `badge-pop`, `check-draw`, `confetti`) in `globals.css`; every animation gated by the existing `prefers-reduced-motion` override.
+2. **Feedback primitives** ✅ — global `Toaster` + imperative `toast.success/error/info/undoable/retryable` (`components/toaster.tsx`, mounted in app shell, aria-live); `usePendingAction` + `OptimisticToggle` (`components/feedback.tsx`); wired into clock-in, notifications (optimistic read w/ rollback), favorites (rollback), payroll toasts.
+3. **Skeletons everywhere** ✅ — shared `ListLoading`/`StatGridLoading`/`BoardLoading` (`components/loading.tsx`) + `loading.tsx` on the ten highest-traffic segments (home, people, requests, tickets, payroll, approvals, admin, notifications, leave, attendance).
+4. **Empty & error states** ✅ — branded 404 with recovery actions + ⌘K hint, route `error.tsx` + `global-error.tsx` + in-shell `(app)/error.tsx` (keeps sidebar during recovery).
+5. **Command palette** ✅ — recent jumps (localStorage, 5 max), `/` shortcut when not typing, mobile `PaletteOpenButton` in the top bar, combobox/listbox ARIA, enter-rise animation.
+6. **Keyboard & a11y pass** ✅ — contrast audit: all text tokens ≥4.5:1 or large-text-exempt (`--text-tertiary` 4.29, brand-on-subtle 3.7–3.85, used at ≥14px semibold); `disabled` token exempt (WCAG 1.4.3 exception); skip-link, `:focus-visible` rings, toast aria-live (assertive for errors) already in place.
+7. **Mobile** ✅ — `BottomNav` (first 5 workspaces, ≥44px touch targets, safe-area padding, `md:hidden`) + main-content bottom padding so it never covers content; palette launcher in the mobile top bar; existing Menu disclosure kept for full coverage.
+8. **Delight** ✅ — `components/delight.tsx`: `shouldCelebrate` once-per-user keys, `burstConfetti` (CSS-only, reduced-motion inert), `CheckBurst` stroke-drawn check. Moments: first clock-in (check), checklist completion (confetti + toast), payslip-ready (confetti + sparkle on paid slips). All ≤1.6s, once per user, localStorage-persisted.
 
 Goal: best-in-class feel without new heavy deps (CSS-first; framer-motion MIT/free only where needed).
 
@@ -179,9 +190,16 @@ Goal: best-in-class feel without new heavy deps (CSS-first; framer-motion MIT/fr
 
 Gate: Lighthouse ≥95 a11y/perf on core pages; interaction audit checklist.
 
-### Phase 7 — Sidebar/IA restructure (proposals in §2.2) (~2 days)
+### Phase 7 — Sidebar/IA restructure — **SHIPPED 2026-09-09** (§2.2 implemented)
 
-Implement 2.2 after your sign-off: Knowledge+Documents merge, Facilities & IT merge, Governance→Admin, ⌘K AI shortcut. Rail shrinks 14 → 11.
+All four §2.2 proposals implemented in `src/lib/workspaces.ts`:
+
+1. **Knowledge + Documents merged** ✅ — Knowledge workspace now carries Articles / Documents / HR Documents under a "Content" group. Gating is per-item, so orgs without the documents module still see plain Knowledge. The separate Documents workspace and the duplicate People → HR Documents entry are gone.
+2. **Facilities & IT merged** ✅ — Assets + Workplace are one workspace (Rooms & Bookings under "Facilities", Assets under "IT & Equipment").
+3. **Governance → Admin** ✅ — moved under a new "GRC" group in Admin.
+4. **⌘K "Ask AI" shortcut** ✅ — the command palette pins an "Ask AI" action above results; typed queries become the prompt (`Ask AI: "…"`), handed to the assistant via sessionStorage and prefilled into the composer.
+
+Rail shrinks 14 → 11 (home, people, work, requests, support, knowledge, company, facilities, finance, analytics, ai, admin = 12 with admin; 11 user-facing when admin/platform are excluded by permission gating). Gating model unchanged — workspaces appear only when at least one item survives module/permission/scope filtering.
 
 ### Phase 8 — Module depth (enterprise completeness sweep)
 
