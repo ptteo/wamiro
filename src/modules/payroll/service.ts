@@ -8,6 +8,7 @@ import type { AuthContext } from "@/lib/session";
 import {
   employees,
   leaveEncashments,
+  organizations,
   payslips,
   payrollArrears,
   payrollRuns,
@@ -1082,6 +1083,9 @@ export async function getPayslip(ctx: AuthContext, payslipId: string) {
       employeeUserId: payslips.employeeUserId,
       employeeName: users.name,
       employeeCode: payslips.employeeCode,
+      employeeJobTitle: employees.jobTitle,
+      organizationName: organizations.name,
+      organizationLogoUrl: organizations.logoUrl,
       earnings: payslips.earnings,
       deductions: payslips.deductions,
       gross: payslips.gross,
@@ -1093,6 +1097,14 @@ export async function getPayslip(ctx: AuthContext, payslipId: string) {
     .from(payslips)
     .innerJoin(payrollRuns, eq(payrollRuns.id, payslips.runId))
     .innerJoin(users, eq(users.id, payslips.employeeUserId))
+    .leftJoin(
+      employees,
+      and(
+        eq(employees.organizationId, orgId),
+        eq(employees.userId, payslips.employeeUserId),
+      ),
+    )
+    .innerJoin(organizations, eq(organizations.id, payslips.organizationId))
     .where(and(eq(payslips.id, payslipId), eq(payslips.organizationId, orgId)))
     .limit(1);
   if (!row) throw ApiError.notFound();
@@ -1111,6 +1123,9 @@ export async function getPayslip(ctx: AuthContext, payslipId: string) {
     employeeUserId: row.employeeUserId,
     employeeName: row.employeeName,
     employeeCode: row.employeeCode,
+    employeeJobTitle: row.employeeJobTitle,
+    organizationName: row.organizationName,
+    organizationLogoUrl: row.organizationLogoUrl,
     earnings: row.earnings,
     deductions: row.deductions,
     gross: Number(row.gross),
