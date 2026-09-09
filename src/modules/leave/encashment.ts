@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 
 import { db, first } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
@@ -39,11 +39,34 @@ export async function apply(ctx: AuthContext, input: EncashInput) {
   }
 
   const [type] = await db
-    .select({ id: leaveTypes.id, name: leaveTypes.name })
+    .select({ id: leaveTypes.id, name: leaveTypes.name, encashmentCapDays: leaveTypes.encashmentCapDays })
     .from(leaveTypes)
     .where(and(eq(leaveTypes.id, input.leaveTypeId), eq(leaveTypes.organizationId, orgId)))
     .limit(1);
   if (!type) throw ApiError.notFound("Leave type not found");
+
+  // Phase 8 — per-type yearly encashment cap (null = no type-level cap).
+  if (type.encashmentCapDays !== null) {
+    const used = await db
+      .select({ total: sql<string | null>`coalesce(sum(${leaveEncashments.days}), 0)` })
+      .from(leaveEncashments)
+      .where(
+        and(
+          eq(leaveEncashments.organizationId, orgId),
+          eq(leaveEncashments.employeeUserId, ctx.user.id),
+          eq(leaveEncashments.leaveTypeId, input.leaveTypeId),
+          sql`${leaveEncashments.status} IN ('pending', 'approved')`,
+          gte(leaveEncashments.createdAt, new Date(Date.UTC(YEAR, 0, 1))),
+        ),
+      );
+    const usedDays = Number(used[0]?.total ?? 0);
+    const cap = Number(type.encashmentCapDays);
+    if (usedDays + input.days > cap) {
+      throw ApiError.badRequest(
+        `Encashment cap for ${type.name} is ${cap} day(s)/year — ${usedDays} already committed`,
+      );
+    }
+  }
 
   const [bal] = await db
     .select({

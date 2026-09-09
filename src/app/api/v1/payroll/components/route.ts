@@ -11,6 +11,7 @@ const createSchema = z.object({
   amountType: z.enum(["fixed", "percent_of_basic"]),
   defaultAmount: z.number().min(0).optional(),
   isTaxable: z.boolean().optional(),
+  taxGroup: z.string().max(60).optional(),
 });
 
 export const GET = route(async (_req, { auth }) => {

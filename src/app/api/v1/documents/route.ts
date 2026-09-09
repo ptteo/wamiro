@@ -38,6 +38,8 @@ export const POST = route(
       {
         category: (form.get("category") as string | null) ?? undefined,
         ownerUserId: (form.get("ownerUserId") as string | null) || null,
+        folder: (form.get("folder") as string | null) ?? undefined,
+        expiresAt: (form.get("expiresAt") as string | null) ?? undefined,
       },
     );
     return NextResponse.json({ ok: true, id: row.id }, { status: 201 });

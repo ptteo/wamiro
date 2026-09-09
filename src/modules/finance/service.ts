@@ -11,7 +11,9 @@ import type { AuthContext } from "@/lib/session";
 import {
   budgets,
   departments,
+  employees,
   expenses,
+  financeApprovalThresholds,
   projects,
   purchaseRequests,
   travelRequests,
@@ -45,6 +47,82 @@ function expenseVisible(ctx: AuthContext) {
 }
 export function canApproveFinance(ctx: AuthContext) {
   return can(ctx.access, "finance.approve");
+}
+
+/** Company-scope finance approver (band decisions always allowed). */
+function companyApprover(ctx: AuthContext): boolean {
+  const scope = can(ctx.access, "finance.approve") && widestScope(ctx.access, "finance.approve");
+  return scope === "COMPANY" || scope === "GLOBAL";
+}
+
+/** Is the actor the direct manager of the subject? */
+async function isManagerOf(ctx: AuthContext, subjectId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(and(eq(employees.userId, subjectId), eq(employees.managerUserId, ctx.user.id)))
+    .limit(1);
+  return !!row;
+}
+
+/** Phase 8 — the active threshold band covering an amount (first match wins). */
+async function matchingThreshold(orgId: string, amountCents: number) {
+  const [row] = await db
+    .select()
+    .from(financeApprovalThresholds)
+    .where(
+      and(
+        eq(financeApprovalThresholds.organizationId, orgId),
+        eq(financeApprovalThresholds.active, true),
+        sql`${financeApprovalThresholds.minAmountCents} <= ${amountCents}`,
+        or(
+          sql`${financeApprovalThresholds.maxAmountCents} IS NULL`,
+          sql`${financeApprovalThresholds.maxAmountCents} >= ${amountCents}`,
+        ),
+      ),
+    )
+    .orderBy(desc(financeApprovalThresholds.minAmountCents))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Phase 8 — threshold chain admin (finance.approve). */
+export async function listThresholds(ctx: AuthContext) {
+  if (!canApproveFinance(ctx)) throw ApiError.forbidden();
+  return db
+    .select()
+    .from(financeApprovalThresholds)
+    .where(eq(financeApprovalThresholds.organizationId, ctx.user.organizationId))
+    .orderBy(financeApprovalThresholds.minAmountCents);
+}
+
+export async function setThresholds(
+  ctx: AuthContext,
+  rows: { minAmountCents: number; maxAmountCents: number | null; approverMode: "company" | "manager"; active?: boolean }[],
+) {
+  if (!canApproveFinance(ctx)) throw ApiError.forbidden();
+  const orgId = ctx.user.organizationId;
+  await db.delete(financeApprovalThresholds).where(eq(financeApprovalThresholds.organizationId, orgId));
+  const clean = rows
+    .filter((r) => Number.isFinite(r.minAmountCents) && r.minAmountCents >= 0)
+    .slice(0, 20)
+    .map((r) => ({
+      organizationId: orgId,
+      minAmountCents: Math.round(r.minAmountCents),
+      maxAmountCents: r.maxAmountCents === null || r.maxAmountCents === undefined ? null : Math.round(r.maxAmountCents),
+      approverMode: r.approverMode === "manager" ? "manager" : "company",
+      active: r.active ?? true,
+    }));
+  if (clean.length) await db.insert(financeApprovalThresholds).values(clean);
+  await audit({
+    organizationId: orgId,
+    actorUserId: ctx.user.id,
+    action: "FINANCE_THRESHOLDS_UPDATED",
+    entityType: "finance_thresholds",
+    entityId: orgId,
+    newValue: { count: clean.length },
+  });
+  return listThresholds(ctx);
 }
 
 // ---------- expenses ----------
@@ -181,7 +259,16 @@ export async function decideExpense(ctx: AuthContext, id: string, action: "appro
     if (!canApproveFinance(ctx)) throw ApiError.forbidden();
     if (isSelf) throw ApiError.badRequest("You cannot approve your own expense");
     if (row.status !== "submitted") throw ApiError.badRequest("Expense is not awaiting decision");
+    // Phase 8 — approval chain per amount threshold: an expense must be
+    // resolved by the approver mode configured for its amount band. The
+    // matching band's 'manager' mode requires the requester's manager (or a
+    // company approver acting above their band — kept simple: company
+    // approvers may always decide; the band gates manager-only decisions).
+    const band = await matchingThreshold(ctx.user.organizationId, row.amountCents);
     if (action === "approve") {
+      if (band?.approverMode === "manager" && !companyApprover(ctx) && !(await isManagerOf(ctx, row.submittedBy))) {
+        throw ApiError.forbidden("This amount requires the employee's manager");
+      }
       await db
         .update(expenses)
         .set({ status: "approved", decidedBy: ctx.user.id, decidedAt: new Date() })

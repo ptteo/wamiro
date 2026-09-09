@@ -160,6 +160,16 @@ function PayslipView({ p, compact }: { p: PayslipDto; compact?: boolean }) {
           <Row label="Net pay" value={fmtMoney(p.net)} strong />
         </dl>
       </div>
+      {!compact && (
+        <div className="mt-3 flex justify-end">
+          <a
+            href={`/payroll/payslip/${p.id}`}
+            className="lift rounded-md border border-border-default px-3 py-1.5 text-xs font-medium text-secondary hover:bg-surface-subtle"
+          >
+            Print / PDF
+          </a>
+        </div>
+      )}
     </div>
   );
 }

@@ -278,6 +278,15 @@ export async function createTicketRecord(
     console.error(JSON.stringify({ level: "error", msg: "auto_assign_hook_failed", orgId, ticketId: row.id, err: String(e) }));
   }
 
+  // Phase 8 — per-group SLA windows + business-hours calendar (best-effort,
+  // runs after routing so the group is known; defaults already applied above).
+  try {
+    const { applyGroupSla } = await import("@/modules/tickets/policy");
+    await applyGroupSla(orgId, row.id);
+  } catch (e) {
+    console.error(JSON.stringify({ level: "error", msg: "group_sla_hook_failed", orgId, ticketId: row.id, err: String(e) }));
+  }
+
   return row;
 }
 

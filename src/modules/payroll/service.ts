@@ -71,6 +71,8 @@ export interface ComponentInput {
   amountType: "fixed" | "percent_of_basic";
   defaultAmount?: number;
   isTaxable?: boolean;
+  /** Phase 8 — display/reporting group for tax components (config-only). */
+  taxGroup?: string;
 }
 
 export async function createComponent(ctx: AuthContext, input: ComponentInput) {
@@ -108,6 +110,7 @@ export async function createComponent(ctx: AuthContext, input: ComponentInput) {
         amountType: input.amountType,
         defaultAmount: String(amount),
         isTaxable: input.isTaxable ?? true,
+        taxGroup: input.taxGroup?.trim().slice(0, 60) || null,
       })
       .returning(),
   );
@@ -584,6 +587,34 @@ export async function createArrears(
     newValue: { amount: input.amount, employee: input.employeeUserId },
   });
   return row;
+}
+
+/** Arrears ledger (payroll.manage): pending recover on next compute + applied history. */
+export async function listArrears(ctx: AuthContext, opts: { status?: string } = {}) {
+  await ensureManage(ctx);
+  const status = opts.status === "pending" || opts.status === "applied" ? opts.status : null;
+  const rows = await db
+    .select({
+      id: payrollArrears.id,
+      employeeUserId: payrollArrears.employeeUserId,
+      employeeName: users.name,
+      amount: payrollArrears.amount,
+      reason: payrollArrears.reason,
+      status: payrollArrears.status,
+      appliedRunId: payrollArrears.appliedRunId,
+      createdAt: payrollArrears.createdAt,
+    })
+    .from(payrollArrears)
+    .innerJoin(users, eq(users.id, payrollArrears.employeeUserId))
+    .where(
+      and(
+        eq(payrollArrears.organizationId, ctx.user.organizationId),
+        status ? eq(payrollArrears.status, status) : undefined,
+      ),
+    )
+    .orderBy(desc(payrollArrears.createdAt))
+    .limit(200);
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
 }
 
 async function encashmentsInPeriod(orgId: string, employeeUserId: string, startIso: string, endIso: string): Promise<number> {

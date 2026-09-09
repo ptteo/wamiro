@@ -49,6 +49,12 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   retention_sweep: { run: runRetentionSweepJob, everyMs: 12 * 60 * 60_000 },
   deletion_sweep: { run: runDeletionSweepJob, everyMs: 60 * 60_000 },
   cleanup_orphans: { run: runOrphanCleanupJob, everyMs: 24 * 60 * 60_000 },
+  // Phase 8 — module depth sweeps
+  attendance_policy_sweep: { run: runAttendancePolicySweep, everyMs: 15 * 60_000 },
+  documents_expiry_sweep: { run: runDocumentsExpirySweep, everyMs: 24 * 60 * 60_000 },
+  assets_warranty_sweep: { run: runAssetsWarrantySweep, everyMs: 24 * 60 * 60_000 },
+  work_recurrence_sweep: { run: runWorkRecurrenceSweep, everyMs: 24 * 60 * 60_000 },
+  announcements_publish_sweep: { run: runAnnouncementsPublishSweep, everyMs: 5 * 60_000 },
 };
 
 /** Tenant ids the per-org sweeps iterate (platform org excluded). */
@@ -86,7 +92,7 @@ async function withLedger(job: string, fn: Job): Promise<JobResult> {
 
 async function runPerOrgSlaSweep(): Promise<JobResult> {
   const orgs = await tenantIds();
-  let checked = 0, warned = 0, breached = 0;
+  let checked = 0, warned = 0, breached = 0, autoClosed = 0;
   const failures: string[] = [];
   for (const orgId of orgs) {
     try {
@@ -95,8 +101,14 @@ async function runPerOrgSlaSweep(): Promise<JobResult> {
     } catch (e) {
       failures.push(`${orgId.slice(0, 8)}: ${String(e).slice(0, 120)}`);
     }
+    try {
+      const { sweepAutoClose } = await import("@/modules/tickets/policy");
+      autoClosed += (await sweepAutoClose(orgId)).closed;
+    } catch {
+      // auto-close is policy sugar — never fail the SLA sweep over it
+    }
   }
-  return { ok: failures.length === 0, detail: { orgs: orgs.length, checked, warned, breached, failures: failures.slice(0, 5) } };
+  return { ok: failures.length === 0, detail: { orgs: orgs.length, checked, warned, breached, autoClosed, failures: failures.slice(0, 5) } };
 }
 
 async function runTrialSweep(): Promise<JobResult> {
@@ -185,6 +197,67 @@ async function runOrphanCleanupJob(): Promise<JobResult> {
   try {
     const r = await sweepOrphanedObjects();
     return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+// ---------- Phase 8 — module depth sweeps ----------
+
+/** Auto-clockout stale shifts + regularization reminders. */
+async function runAttendancePolicySweep(): Promise<JobResult> {
+  const { sweepAutoClockout, sweepRegularizationReminders } = await import("@/modules/attendance/policy");
+  const failures: string[] = [];
+  let closed = 0;
+  let reminded = 0;
+  try {
+    closed = (await sweepAutoClockout()).closed;
+  } catch (e) {
+    failures.push(`auto_clockout: ${String(e).slice(0, 120)}`);
+  }
+  try {
+    reminded = (await sweepRegularizationReminders()).reminded;
+  } catch (e) {
+    failures.push(`regularization: ${String(e).slice(0, 120)}`);
+  }
+  return { ok: failures.length === 0, detail: { closed, reminded, failures } };
+}
+
+/** Documents expiring soon → notify holders (notify-once stamp). */
+async function runDocumentsExpirySweep(): Promise<JobResult> {
+  try {
+    const { sweepDocumentExpiry } = await import("@/modules/documents/policy");
+    return { ok: true, detail: await sweepDocumentExpiry() };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Assets with warranty expiring soon → notify admins (notify-once stamp). */
+async function runAssetsWarrantySweep(): Promise<JobResult> {
+  try {
+    const { sweepWarrantyExpiry } = await import("@/modules/assets/policy");
+    return { ok: true, detail: await sweepWarrantyExpiry() };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Materialize due recurring tasks into fresh open tasks. */
+async function runWorkRecurrenceSweep(): Promise<JobResult> {
+  try {
+    const { sweepRecurringTasks } = await import("@/modules/work/policy");
+    return { ok: true, detail: await sweepRecurringTasks() };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Publish announcements whose scheduled_for time has arrived. */
+async function runAnnouncementsPublishSweep(): Promise<JobResult> {
+  try {
+    const { sweepScheduledAnnouncements } = await import("@/modules/announcements/policy");
+    return { ok: true, detail: await sweepScheduledAnnouncements() };
   } catch (e) {
     return { ok: false, detail: { error: String(e).slice(0, 300) } };
   }

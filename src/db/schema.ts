@@ -75,6 +75,9 @@ export interface RequestTypeField {
   type: "text" | "textarea" | "number" | "date" | "select";
   required?: boolean;
   options?: string[];
+  /** Phase 8 — conditional visibility: field appears only when the trigger
+   *  field's value matches one of `values` (or is non-empty when omitted). */
+  visibleIf?: { key: string; values?: string[] };
 }
 
 /** One ordered step of a request-type approval chain. */
@@ -1045,6 +1048,8 @@ export const requests = pgTable(
     }),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     reviewNote: text("review_note"),
+    /** Phase 8 — set when a delegate (not the primary approver) decided. */
+    decidedByDelegate: boolean("decided_by_delegate").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1077,6 +1082,8 @@ export const documents = pgTable(
     folder: text("folder").notNull().default("General"),
     /** Phase 8 — after this date the doc counts as stale (expiry reminders). */
     expiresAt: date("expires_at"),
+    /** Phase 8 — guards the one-time expiry reminder notification. */
+    expiryNotifiedAt: timestamp("expiry_notified_at", { withTimezone: true }),
     /** For personal docs: whose document it is */
     ownerUserId: uuid("owner_user_id").references(() => users.id, {
       onDelete: "cascade",
@@ -1749,6 +1756,8 @@ export const tickets = pgTable(
     groupId: uuid("group_id").references(() => ticketGroups.id, {
       onDelete: "set null",
     }),
+    /** Phase 8 — scheduled auto-close time once resolved (org policy). */
+    autoCloseAt: timestamp("auto_close_at", { withTimezone: true }),
     /** Related knowledge article ids (F2.6). */
     relatedKnowledgeIds: uuid("related_knowledge_ids").array().notNull().default([]),
     /** Phase E: when platform ops pulled this ticket into their support queue. */

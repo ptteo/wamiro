@@ -201,7 +201,11 @@ All four §2.2 proposals implemented in `src/lib/workspaces.ts`:
 
 Rail shrinks 14 → 11 (home, people, work, requests, support, knowledge, company, facilities, finance, analytics, ai, admin = 12 with admin; 11 user-facing when admin/platform are excluded by permission gating). Gating model unchanged — workspaces appear only when at least one item survives module/permission/scope filtering.
 
-### Phase 8 — Module depth (enterprise completeness sweep)
+### Phase 8 — Module depth (enterprise completeness sweep) — **SHIPPED 2026-09-09**
+
+All 14 module items implemented behind migration-0060 (additive). Schema: per-group ticket SLA + business hours + auto-close, leave accrual/carry-forward/encashment caps + half-days + per-location holidays, attendance auto-clockout/overtime/regularization, payroll schedule + arrears + tax groups, requests conditional fields + delegation stamp, knowledge versions/visibility/votes, documents folders + expiry stamps, task recurrence + project baselines, announcement scheduling + department targeting, notification thread keys + mutes, finance approval-threshold bands, asset events + warranty expiry. Five new jobs registered (`attendance_policy_sweep`, `documents_expiry_sweep`, `assets_warranty_sweep`, `work_recurrence_sweep`, `announcements_publish_sweep`). Gate: typecheck clean · lint 0 errors · 112/112 unit · 3/3 isolation (incl. the previously-flaky prorated-payroll assertion, now date-robust) · build ✓.
+
+Per-module detail:
 
 Per module, the missing "no customer left behind" items:
 

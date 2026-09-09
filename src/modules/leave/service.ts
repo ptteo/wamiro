@@ -152,8 +152,24 @@ function businessDays(startStr: string, endStr: string): number {
 
 const HALF_DAYS = new Set(["first_half", "second_half"]);
 
-/** Company holidays falling inside an inclusive date range (F3.4: not counted as leave days). */
-async function holidaysInRange(orgId: string, startStr: string, endStr: string): Promise<number> {
+/**
+ * Company holidays falling inside an inclusive date range (F3.4: not counted
+ * as leave days). Phase 8: holidays tagged with a `location` apply only when
+ * the requesting employee works at that location (employees.customFields
+ * `location`); null-location holidays apply to everyone.
+ */
+async function holidaysInRange(
+  orgId: string,
+  employeeUserId: string,
+  startStr: string,
+  endStr: string,
+): Promise<number> {
+  const [emp] = await db
+    .select({ location: sql<string | null>`${employees.customFields} ->> 'location'` })
+    .from(employees)
+    .where(and(eq(employees.userId, employeeUserId), eq(employees.organizationId, orgId)))
+    .limit(1);
+  const location = emp?.location ?? null;
   const [row] = await db
     .select({ c: sql<number>`count(*)::int` })
     .from(holidays)
@@ -162,6 +178,11 @@ async function holidaysInRange(orgId: string, startStr: string, endStr: string):
         eq(holidays.organizationId, orgId),
         gte(holidays.date, startStr),
         lte(holidays.date, endStr),
+        // holiday applies when it is global (null location) or matches the
+        // employee's location; employees without a location see global only
+        location
+          ? sql`(${holidays.location} IS NULL OR ${holidays.location} = ${location})`
+          : sql`${holidays.location} IS NULL`,
       ),
     );
   return row?.c ?? 0;
@@ -184,7 +205,7 @@ export async function apply(ctx: AuthContext, input: ApplyInput) {
 
   let days = businessDays(input.startDate, input.endDate);
   // company holidays inside the range are not charged leave days
-  days -= await holidaysInRange(ctx.user.organizationId, input.startDate, input.endDate);
+  days -= await holidaysInRange(ctx.user.organizationId, ctx.user.id, input.startDate, input.endDate);
   // Phase 8 — half-day: only valid on a single-day request; costs 0.5 days.
   const halfDay = input.halfDay && HALF_DAYS.has(input.halfDay) ? input.halfDay : null;
   if (halfDay) {

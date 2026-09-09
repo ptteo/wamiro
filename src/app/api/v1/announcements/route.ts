@@ -12,6 +12,9 @@ export const GET = route(async (_req, { auth }) => {
 const createSchema = z.object({
   title: z.string().min(3).max(150),
   body: z.string().min(3).max(5000),
+  audience: z.enum(["company", "department"]).optional(),
+  departmentId: z.string().uuid().nullable().optional(),
+  scheduledFor: z.string().datetime().nullable().optional(),
 });
 
 export const POST = route(

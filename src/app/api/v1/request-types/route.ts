@@ -18,6 +18,13 @@ const fieldSchema = z.object({
   type: z.enum(["text", "textarea", "number", "date", "select"]),
   required: z.boolean().optional(),
   options: z.array(z.string().max(60)).max(12).optional(),
+  // Phase 8 — conditional fields
+  visibleIf: z
+    .object({
+      key: z.string().min(1).max(40),
+      values: z.array(z.string().max(60)).max(12).optional(),
+    })
+    .optional(),
 });
 
 const createSchema = z.object({

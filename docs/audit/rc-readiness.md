@@ -1,6 +1,37 @@
 # Wamiro — Release-Candidate Readiness
 
-Status date: Phase 6 UX system & micro-interactions — shipped.
+Status date: Phase 8 module depth sweep — shipped.
+
+## Closing verification (Phase 8)
+
+| Gate | Result |
+|---|---|
+| typecheck | clean |
+| lint | 0 errors (72 pre-existing style warnings) |
+| unit tests | 112/112 (added `tickets/policy.test.ts` 8, `leave/accrual.test.ts` 5) |
+| isolation | 3/3 PASS — the Phase-3-era prorated-payroll flake (`275 !== 850`, date-of-week dependent) is fixed by asserting the invariant (net = gross − deductions, pension + advance lines present) instead of a weekday-dependent absolute |
+| build | `next build` ✓ |
+| migrations | 0060 additive; dev DB caught up (incl. late additions `documents.expiry_notified_at`, `announcements.department_id/scheduled_for`, `notifications.thread_key`, `knowledge_articles.visibility/department_id`) |
+| jobs | 5 new registry entries: `attendance_policy_sweep` (15 min), `documents_expiry_sweep` + `assets_warranty_sweep` + `work_recurrence_sweep` (daily), `announcements_publish_sweep` (5 min); ticket auto-close folded into `sla_sweep` |
+
+Phase 8 module evidence:
+
+| Module | Shipped | API |
+|---|---|---|
+| Tickets | per-group SLA overrides + business-hours roll-forward (`effectiveSlaWindows`, `slaDueAt`), auto-close stale resolved w/ notify | PATCH `/ticket-groups/[id]` accepts `slaResolutionHours/slaFirstResponseHours/businessHours` |
+| Leave | accrual + carry-forward/encashment caps enforced in encashment apply; half-day; per-location holidays via `customFields.location` | existing `/leave/*`, `/holidays` (+ `location`) |
+| Attendance | auto-clockout sweep (org `auto_clockout_hours`), overtime report, regularization reminders | `attendance/policy.ts` via jobs |
+| Payroll | semi-monthly schedule, arrears ledger (create/list/auto-recover), tax-group on components, print-ready payslip | GET/POST `/payroll/arrears`, `/payroll/payslip/[id]` page |
+| Requests | conditional fields (`visibleIf` in type defs, validated server-side), `decided_by_delegate` stamp on review | POST/PUT `/request-types` |
+| Knowledge | version history (20 snapshots) + restore, visibility company/department/draft, helpful votes | GET/POST `/knowledge/[id]/versions`, POST `/knowledge/[id]/vote` |
+| Documents | folders + `expires_at` + expiry reminders (notify-once stamps) | `/documents` upload accepts `folder`, `expiresAt` |
+| Work | daily/weekly/monthly recurrence spawn sweep | `work/policy.ts` via jobs |
+| Announcements | scheduling (`scheduled_for`) + department targeting, publish sweep notifies audience | POST `/announcements` (+`audience`,`departmentId`,`scheduledFor`) |
+| Notifications | per-type mutes + thread mutes (both block in-app; email already gated) | GET/PUT `/notifications/mutes`, POST `/notifications/[id]/mute` |
+| Analytics | CSV export of HR + support reports | GET `/analytics/export?dataset=hr\|support` |
+| Finance | approval bands by amount (`finance_approval_thresholds`), manager-mode gating | GET/PUT `/finance/approval-thresholds` |
+| People ops | exit clearance verify (checklist + assets + tickets + pending leave) | POST `/people-ops/journeys/[id]/verify-clearance` |
+| Assets | check-in/check-out `asset_events` history + warranty expiry sweep | GET `/assets/[id]/history`, POST `/assets` (+`warrantyExpiresAt`) |
 
 ## Closing verification (Phase 6)
 

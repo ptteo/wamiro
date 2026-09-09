@@ -126,6 +126,9 @@ ALTER TABLE documents
 ALTER TABLE documents
   ADD COLUMN IF NOT EXISTS expires_at date;
 --> statement-breakpoint
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS expiry_notified_at timestamptz;
+--> statement-breakpoint
 ALTER TABLE employee_documents
   ADD COLUMN IF NOT EXISTS expiry_notified_at timestamptz;
 
