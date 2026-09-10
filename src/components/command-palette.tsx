@@ -295,11 +295,14 @@ export function CommandPalette({ nav }: { nav: NavItem[] }) {
 
 /** Tiny launcher for touch surfaces without the sidebar (mobile top bar). */
 export function PaletteOpenButton({ className }: { className?: string }) {
-  return (
+  const openPalette = useCallback(() => {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("wamiro:open-palette"));
+  }, []);
+  return typeof window !== "undefined" ? (
     <button
       type="button"
       aria-label="Open search"
-      onClick={() => window.dispatchEvent(new Event("wamiro:open-palette"))}
+      onClick={openPalette}
       className={
         className ??
         "inline-flex h-8 w-8 items-center justify-center rounded-md border border-border-default bg-surface text-secondary transition hover:bg-surface-hover hover:text-primary"
@@ -307,5 +310,7 @@ export function PaletteOpenButton({ className }: { className?: string }) {
     >
       <Search className="h-4 w-4" strokeWidth={1.75} />
     </button>
+  ) : (
+    <span className={className ?? "inline-block h-8 w-8"} aria-hidden />
   );
 }
