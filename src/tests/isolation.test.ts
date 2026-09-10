@@ -10,7 +10,7 @@
  * Creates and deletes its own throwaway tenants — never touch real data.
  */
 import assert from "node:assert/strict";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { test } from "node:test";
 
 const hasDb = !!process.env.DATABASE_URL;
@@ -48,6 +48,7 @@ test(
     const suffix = Date.now().toString(36);
     const orgIds: string[] = [];
     const userIds: string[] = [];
+    const operatorEmails: string[] = [];
     const passwordHash = await hashPassword("Iso-Test-Password-1!");
 
     async function makeTenant(tag: "a" | "b") {
@@ -614,7 +615,44 @@ test(
         await consoleSvc.platformTicketReply(ctxOp, pt!.id, "platform team on it");
         const replies = await ticketsSvc.getTicket(ctxAdminA, pt!.id);
         assert.ok(replies.replies.some((r) => r.body === "platform team on it"), "operator reply lands on the ticket");
+
+        // --- Phase A: usage metering (platform.tenant_usage_daily) ---
+        const usageSvc = await import("@/modules/platform/usage");
+        // tenant admins/employees are denied — panel reads are platform-only
+        await assert.rejects(() => usageSvc.usageSummary(ctxAdminA), /platform\.admin/, "usage summary is platform-only");
+        await assert.rejects(() => usageSvc.moduleHeatmap(ctxAdminA), /platform\.admin/, "heatmap is platform-only");
+        // rollup writes a real row (soft ref + snapshots, no FK) that is idempotent
+        const day = new Date();
+        await usageSvc.rollupUsageDay(A.orgId, day);
+        await usageSvc.rollupUsageDay(A.orgId, day); // second run must not throw or duplicate
+        const rolled = await db.execute(
+          sql`SELECT day::text AS day, org_name, org_slug, plan, actions, seats_active
+              FROM platform.tenant_usage_daily WHERE org_id = ${A.orgId} AND day = ${day.toISOString().slice(0, 10)}`,
+        );
+        const usageRow = rolled.rows[0] as { day: string; org_name: string; org_slug: string; plan: string } | undefined;
+        assert.ok(usageRow, "rollup persisted one usage row for the day");
+        assert.equal(usageRow.org_name, "Iso Test A " + suffix, "row carries the org name snapshot");
+        assert.equal(usageRow.plan, "starter", "row snapshots the org plan");
+        // operator read sees the row; the OTHER tenant's rows never appear in A's view
+        const summary = await usageSvc.usageSummary(ctxOp);
+        const aRow = summary.find((r) => r.organizationId === A.orgId);
+        assert.ok(aRow, "operator sees A in the fleet usage table");
+        assert.ok(!summary.some((r) => r.organizationId === ctxOp.user.organizationId), "platform org itself excluded");
+        // cleanup — the rollup table is panel-owned; remove the throwaway row
+        await db.execute(sql`DELETE FROM platform.tenant_usage_daily WHERE org_id = ${A.orgId}`);
       }
+
+
+
+      async function orgBillingStatusOf(orgId: string): Promise<string> {
+        const [row] = await db
+          .select({ s: schema.organizations.billingStatus })
+          .from(schema.organizations)
+          .where(eq(schema.organizations.id, orgId))
+          .limit(1);
+        return String(row?.s ?? "");
+      }
+
 
       // --- Phase 2: ticket attachments (F2.1) ---
       const attMod = await import("@/modules/tickets/attachments");
@@ -1681,11 +1719,130 @@ test(
       assert.equal(typeof ret.deleted.notifications, "number");
       assert.equal(typeof ret.deleted.sessions, "number");
 
+      // --- Admin panel B-fix: platform ledger + two-person rule ---
+      const ledgerSvc = await import("@/modules/platform/billing-ledger");
+      const destructiveSvc = await import("@/modules/platform/destructive-ops");
+      const { ensurePlatformSuperAdmin } = await import("@/modules/org/service");
+      const opEmails = [`roota-${suffix}@iso.test`, `rootb-${suffix}@iso.test`];
+      operatorEmails.push(...opEmails);
+      await ensurePlatformSuperAdmin(opEmails[0]!, passwordHash, "Op A");
+      await ensurePlatformSuperAdmin(opEmails[1]!, passwordHash, "Op B");
+      const [opA] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.email, opEmails[0]!))
+        .limit(1);
+      const [opB] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.email, opEmails[1]!))
+        .limit(1);
+      assert.ok(opA && opB, "two platform operators exist");
+
+      // gate: panel endpoints are platform-only
+      await assert.rejects(() => ledgerSvc.listInvoices(ctxAdminA), /platform\.admin/);
+      await assert.rejects(() => destructiveSvc.listPending(ctxAdminA), /platform\.admin/);
+
+      // manual invoice + payments on the unified ledger
+      const ctxOpA = await ctxFor(opA!.id);
+      const ctxOpB = await ctxFor(opB!.id);
+      const inv = await ledgerSvc.createManualInvoice(ctxOpA, {
+        orgId: A.orgId,
+        lines: [{ desc: "Platform fee", qty: 1, unitCents: 4000 }],
+      });
+      assert.ok(inv.number.startsWith("INV-"), "manual invoice number generated");
+      const pay1 = await ledgerSvc.recordPayment(ctxOpB, { invoiceId: inv.id, amountCents: 1000 });
+      assert.equal(pay1.closed, false, "partial payment does not close the invoice");
+      const pay2 = await ledgerSvc.recordPayment(ctxOpA, { invoiceId: inv.id, amountCents: 3000 });
+      assert.equal(pay2.closed, true, "full payment closes the invoice");
+
+      // two-person rule: paying tenant cancel requires a second operator
+      await db
+        .update(schema.organizations)
+        .set({ billingProvider: "paddle", plan: "growth", billingStatus: "active" })
+        .where(eq(schema.organizations.id, A.orgId));
+      const cancel = await destructiveSvc.requestOrExecuteCancel(ctxOpA, A.orgId, `iso-cancel-${suffix}`);
+      assert.equal(cancel.pending, true, "paying tenant cancel is queued, not executed");
+      assert.equal(
+        await orgBillingStatusOf(A.orgId),
+        "active",
+        "subscription untouched while pending",
+      );
+      await assert.rejects(
+        () => destructiveSvc.approveDestructiveOp(ctxOpA, cancel.opId!),
+        (e: unknown) => e instanceof ApiError && e.status === 409,
+        "requester cannot approve their own destructive op",
+      );
+      await destructiveSvc.approveDestructiveOp(ctxOpB, cancel.opId!);
+      assert.equal(
+        await orgBillingStatusOf(A.orgId),
+        "cancelled",
+        "second operator's approval executes the cancellation",
+      );
+      await assert.rejects(
+        () => destructiveSvc.approveDestructiveOp(ctxOpB, cancel.opId!),
+        (e: unknown) => e instanceof ApiError && e.status === 404,
+        "resolved op cannot be approved again",
+      );
+
+      // webhook replay against the platform ledger: applied once, mirrored once
+      const billingWebhook = await import("@/modules/billing/webhook");
+      const evtId = `evt-${suffix}`;
+      const payload = {
+        event_id: evtId,
+        event_type: "transaction.completed",
+        occurred_at: new Date().toISOString(),
+        data: {
+          id: `trx-${suffix}`,
+          invoice_id: `inv-${suffix}`,
+          customer_id: `ctm-${suffix}`,
+          currency_code: "USD",
+          status: "paid",
+          details: { totals: { grand_total: "4000" } },
+          items: [{ price: { id: "price_growth" } }],
+          custom_data: { organizationId: B.orgId },
+        },
+      };
+      const first = await billingWebhook.applyPaddleEvent(payload);
+      const second = await billingWebhook.applyPaddleEvent(payload);
+      assert.equal(first.replay, false, "first application is fresh");
+      assert.equal(second.replay, true, "second application is a replay");
+      assert.equal(await billingWebhook.billingEventExists(evtId), true);
+      assert.equal(await billingWebhook.invoiceCountForOrg(B.orgId), 1, "exactly one mirrored invoice");
+      const orgB = await billingWebhook.orgBillingSnapshot(B.orgId);
+      assert.equal(orgB?.billingProvider, "paddle", "org wired to provider");
+      // ledger isolation: B's mirrored invoice never lands on A
+      const ledgerA = await ledgerSvc.listInvoices(ctxOpA, { orgId: A.orgId });
+      assert.ok(!ledgerA.some((i) => i.providerInvoiceId === `inv-${suffix}`), "A ledger excludes B's invoices");
+      // restore B to active so other billing assertions stay coherent
+      await db
+        .update(schema.organizations)
+        .set({ billingStatus: "active" })
+        .where(eq(schema.organizations.id, B.orgId));
+
+      // ledger cleanup: keep the platform schema pristine across runs
+      await db.delete(schema.platformDestructiveOps).where(
+        inArray(schema.platformDestructiveOps.orgId, [A.orgId, B.orgId]),
+      );
+      await db.delete(schema.platformBillingInvoices).where(
+        eq(schema.platformBillingInvoices.providerInvoiceId, `inv-${suffix}`),
+      );
+      await db.delete(schema.platformBillingInvoices).where(
+        eq(schema.platformBillingInvoices.id, inv.id),
+      );
+      await db.delete(schema.platformBillingEvents).where(
+        eq(schema.platformBillingEvents.eventId, evtId),
+      );
+
       console.log("isolation suite passed: directory/attendance/leave/leave-cancel/search/admin/overrides/requests/documents/knowledge/analytics/work/admin-detail/admin-sessions/admin-audit/tickets/announcements/attachments/catalog/it-records/groups/mailboxes/shifts/corrections/encashment/hr-documents/holidays/payroll/advances/analytics-reports/billing/domains/push/ratelimit/invites/lockout/demo/help/tour-prefs/rls/gdpr-deletion/retention all tenant-scoped");
     } finally {
       // cleanup test tenants (users first — FK default is restrict)
       if (userIds.length) {
         await db.delete(schema.users).where(inArray(schema.users.id, userIds));
+      }
+      // platform operators created by this run (their org __platform persists)
+      if (operatorEmails.length) {
+        await db.delete(schema.users).where(inArray(schema.users.email, operatorEmails));
       }
       if (orgIds.length) {
         await db.delete(schema.organizations).where(inArray(schema.organizations.id, orgIds));

@@ -66,16 +66,30 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+export interface PendingOp {
+  id: string;
+  kind: string;
+  orgName: string;
+  reason: string;
+  requestedBy: string;
+  requesterName: string;
+  createdAt: string;
+}
+
 export function PlatformOpsClient({
   riskTenants,
   grants,
   queue,
   ledger,
+  pendingOps,
+  selfUserId,
 }: {
   riskTenants: RiskTenant[];
   grants: SupportGrant[];
   queue: QueueTicket[];
   ledger: LedgerRow[];
+  pendingOps: PendingOp[];
+  selfUserId: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -86,6 +100,17 @@ export function PlatformOpsClient({
   const [broadcastTitle, setBroadcastTitle] = useState("");
   const [broadcastBody, setBroadcastBody] = useState("");
   const [replyDraft, setReplyDraft] = useState<Record<string, string>>({});
+
+  async function decide(opId: string, action: "approve" | "reject") {
+    await act(`op:${opId}`, () =>
+      fetch("/api/v1/platform/destructive-ops", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opId, action }),
+      }),
+      action === "approve" ? "Approved and executed." : "Rejected.",
+    );
+  }
 
   async function act(key: string, fn: () => Promise<Response>, okMsg?: string) {
     setBusy(key);
@@ -285,6 +310,48 @@ export function PlatformOpsClient({
             </ul>
           </div>
         ) : null}
+      </Card>
+
+      {/* ---------- B-fix: two-person approvals ---------- */}
+      <Card>
+        <CardHeader
+          title={`Pending approvals (${pendingOps.length})`}
+          subtitle="Cancelling a PAYING tenant needs a second operator. The requester cannot approve their own request."
+        />
+        {pendingOps.length === 0 ? (
+          <EmptyState title="No approvals waiting" />
+        ) : (
+          <ul className="divide-y divide-border-default">
+            {pendingOps.map((op) => (
+              <li key={op.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3 text-sm">
+                <Badge tone="amber">{op.kind === "cancel_subscription" ? "cancel" : op.kind}</Badge>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-primary">{op.orgName}</p>
+                  <p className="text-xs text-tertiary">
+                    requested by {op.requesterName} · {timeAgo(op.createdAt)} · “{op.reason}”
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy === `op:${op.id}` || op.requestedBy === selfUserId}
+                  onClick={() => decide(op.id, "approve")}
+                  className={`${btn.primary} ${btn.small}`}
+                  title={op.requestedBy === selfUserId ? "You requested this — another operator must approve" : "Approve"}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  disabled={busy === `op:${op.id}`}
+                  onClick={() => decide(op.id, "reject")}
+                  className="text-xs text-danger hover:underline disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       {/* ---------- E.3 broadcast ---------- */}

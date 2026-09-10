@@ -40,7 +40,7 @@ import {
 } from "@/db/schema";
 import { can } from "@/modules/iam/engine";
 
-function requirePlatform(ctx: AuthContext): void {
+export function requirePlatform(ctx: AuthContext): void {
   if (!can(ctx.access, "platform.admin")) {
     throw ApiError.forbidden("Missing permission: platform.admin");
   }

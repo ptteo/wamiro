@@ -20,6 +20,7 @@
 | 7 | **MRR precedence** stated (invoice ledger = collected truth; seats × price = forward-looking only) + refunds/voids bucketed | Two sources previously disagreed silently |
 | 8 | Retention clauses for ledger tables (3 years) | Prevents the next unbounded table |
 | 9 | Phases re-scoped to what remains; provider-side billing marked shipped; effort re-estimated (~2 weeks) | Concurrent enterprise work already landed (migrations 0054–0060) |
+| 10 | Added **§10 "Beyond the phases"** — 14 decide-then-slot improvement suggestions + deferred list, each mapped to the phase where it lands | Operator-requested enhancements kept out of the critical path but on record |
 
 ---
 
@@ -236,7 +237,7 @@ Fleet table sortable by WAU, actions, storage, seat utilization; module-adoption
 | Phase | Scope | Migration | Est. | Status |
 | --- | --- | --- | --- | --- |
 | **B-fix** | Move/reshape shipped billing tables into `platform` schema (soft refs, snapshots, nullable `provider_invoice_id`, manual-invoice columns); keep webhook code path working | 0061 | 1 d | open — **do first** |
-| **A** | Usage metering: `tenant_usage_daily` + `usage_rollup` job + backfill script + fleet Usage tab | 0062 | 3 d | open |
+| **A** | Usage metering: `tenant_usage_daily` + `usage_rollup` job + backfill script + fleet Usage tab | 0062 | 3 d | **done** — migration 0062 + `platform.tenant_usage_daily` schema (with fold-in #4 `plan`/`seat_price_cents` snapshot), hourly `usage_rollup` job, `scripts/backfill-usage.mts`, `/api/v1/platform/usage` route, Usage tab on the platform console, 3-year retention prune |
 | **C** | Tenant 360 + CRM-lite (notes/touchpoints) + timeline merge | 0063 | 4 d | open |
 | **D** | Health scores + alerts/playbooks + Health & Alerts tab | 0064 | 4 d | open |
 | **E** | Revenue analytics: MRR waterfall, cohorts, trial funnel, churn-by-reason capture | — (reads ledger) | 3 d | open |
@@ -274,3 +275,54 @@ Webhook replay/race with manual edits (ledger last-writer-wins + `source` column
 ## 9. Sequencing & cost
 
 B-fix → A → C → D → E → F. All self-built on existing tables + the jobs worker; **$0 new monthly cost** (Paddle fee remains revenue-linked only). Estimated total: **~2 weeks** of focused work for one engineer. **Build starts only on your signal.**
+
+---
+
+## 10. Beyond the phases — improvement suggestions (decide-then-slot)
+
+Enhancements on top of A–F. None are blockers; each is small, free, and slots into an existing phase or runs as a fast-follow. Status column = where it lands if approved.
+
+### 10.1 Relationship & communication
+
+| # | Suggestion | What it adds | Lands in |
+| --- | --- | --- | --- |
+| 1 | **Tenant-facing "Your account manager" widget** — optional Settings card showing the assigned operator (name + photo) with a "contact support" link; assignment via a `platform.tenant_assignments` table (org_id → operator_user_id) | Humanizes the vendor relationship, makes CRM touchpoints earn their keep, gives customers a named person instead of a black hole. Read-only for tenants — data stays platform-side; the only deliberate tenant-visible leak from the panel | Fast-follow after C |
+| 2 | **Weekly operator digest email** — jobs worker composes a Monday-morning email to the Wamiro team: new alerts, MRR movement, trials ending, at-risk list, stalled setups | Makes the panel *proactive* — you don't have to remember to open it; risks surface in your inbox | After D (needs alerts) |
+| 3 | **Contract registry** — `platform.contracts` (org soft-ref, start/end, annual value, PO number, auto_renew, payment_method: card/bank) for enterprise deals bought outside Paddle | Makes the renewal forecast (§4.2) real instead of trial-based only; annual/bank-transfer deals become first-class revenue | Extends B-fix |
+
+### 10.2 Data & analytics precision
+
+| # | Suggestion | What it adds | Lands in |
+| --- | --- | --- | --- |
+| 4 | **Snapshot-based MRR precision** — add `plan text` + `price_cents` to each `tenant_usage_daily` row | MRR waterfall becomes exact instead of reconstructed from *current* prices; historical price changes stop rewriting the past | Fold into A now (one column, zero cost later) |
+| 5 | **Export governance** — the SOC-2-style ops export requires a **reason prompt** (like impersonation), stored in audit with the export's date range and requesting operator | The compliance artifact itself stays compliant; no silent data exfiltration path | Fold into F |
+| 6 | **Health-score history chart on Tenant 360** — 90-day score sparkline next to the grade badge | Turns the score from a snapshot into a story ("healthy until the support incidents") | Fold into C |
+| 7 | **Usage anomaly flag** — jobs worker compares each org's daily actions against its own 30-day median; >5× spike or >80% drop flags a note in the rollup | Spots both power users (expansion candidates) and dying accounts (churn candidates) without any ML — just median math | Fast-follow after A |
+
+### 10.3 Panel UX for the operator team
+
+| # | Suggestion | What it adds | Lands in |
+| --- | --- | --- | --- |
+| 8 | **Global tenant search (⌘K)** — search across tenant name, slug, admin email, invoice number from anywhere in the panel | Speed: the 360 page should be ≤2 keystrokes away, always | Fold into C |
+| 9 | **Saved views + CSV on every list** — persist filter combos per operator (e.g. "red health, growth plan, dormant") | Weekly rituals become one click; exports already planned per table | Fold into F |
+| 10 | **Tenant compare mode** — pick two tenants, side-by-side usage/adoption/billing | Great for QBR prep and for answering "why is Bruito growing but Acme isn't?" | Fast-follow after A |
+| 11 | **Panel dark mode + density toggle** — operators live in this console for hours; respect the product's theme system | Operator comfort; consistent with the existing theme toggle | Fold into F |
+
+### 10.4 Governance & safety
+
+| # | Suggestion | What it adds | Lands in |
+| --- | --- | --- | --- |
+| 12 | **Two-person rule for destructive ops** — tenant deletion and subscription cancellation on annual contracts require a second operator's confirmation (second `approved_by` on the request) | Protects customers from a single-operator mistake; classic enterprise control, trivial to build | Fold into B-fix (cancellation) + Phase 4 GDPR deletion |
+| 13 | **Operator activity digest** — monthly audit summary of the Wamiro team's own actions (impersonations, plan changes, credits, exports) sent to the platform admin | Self-audit hygiene; keeps the operator team honest with zero effort (audit data already exists) | Fold into F |
+| 14 | **Read-only "reason" prompts on billing mutations** — plan changes, credits, and manual invoices require a short reason, stored on the row | Six months later, "why did Bruito get 50% off?" is answerable from the ledger itself | Fold into B-fix |
+
+### 10.5 Explicitly deferred (revisit triggers)
+
+| Item | Revisit when |
+| --- | --- |
+| True time-in-product (client activity pings) | A customer or investor asks for engagement minutes |
+| Multi-currency revenue reporting | First non-USD invoice exists |
+| NPS/survey collection in-panel | 20+ active tenants (statistical meaning) |
+| Warehouse sync / BI export | Data team exists or 100+ tenants |
+| Per-operator SLA targets on alerts | Platform team >2 people |
+

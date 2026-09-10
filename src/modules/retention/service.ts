@@ -64,6 +64,13 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<Retenti
     sql`created_at < ${new Date(now.getTime() - 180 * DAY)}`,
   );
 
+  // Admin panel Phase A — usage rollups (platform schema): the plan fixes a
+  // 3-year retention so this table can never become the next unbounded one.
+  deleted["platform.tenant_usage_daily"] = await boundedDelete(
+    "platform.tenant_usage_daily",
+    sql`day < ${new Date(now.getTime() - 3 * 365 * DAY).toISOString().slice(0, 10)}`,
+  );
+
   return { deleted };
 }
 

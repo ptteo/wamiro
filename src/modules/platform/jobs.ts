@@ -29,6 +29,7 @@ import { escalateOverdueObligationsInOrg } from "@/modules/governance/service";
 import { sweepExpiredTrials } from "@/modules/billing/service";
 import { sweepDunning } from "@/modules/billing/dunning";
 import { pollAllMailboxes } from "@/modules/mailboxes/service";
+import { rollupRecentUsage } from "@/modules/platform/usage";
 import { sendWeeklyDigests } from "@/modules/notifications/service";
 import { purgeDueDeletions } from "@/modules/org/service";
 import { runRetentionSweep } from "@/modules/retention/service";
@@ -44,6 +45,7 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   request_escalation: { run: runPerOrgRequestEscalation, everyMs: 5 * 60_000 },
   governance_sweep: { run: runPerOrgGovernanceSweep, everyMs: 60 * 60_000 },
   mailbox_poll: { run: runMailboxPoll, everyMs: 60_000 },
+  usage_rollup: { run: runUsageRollup, everyMs: 60 * 60_000 },
   email_digest: { run: runEmailDigest, everyMs: 60 * 60_000 },
   // Phase 4 — data-layer housekeeping
   retention_sweep: { run: runRetentionSweepJob, everyMs: 12 * 60 * 60_000 },
@@ -160,6 +162,11 @@ async function runEmailDigest(): Promise<JobResult> {
   } catch (e) {
     return { ok: false, detail: { error: String(e).slice(0, 300) } };
   }
+}
+
+async function runUsageRollup(): Promise<JobResult> {
+  const { orgs, days } = await rollupRecentUsage();
+  return { ok: true, detail: { orgs, days } };
 }
 
 async function runMailboxPoll(): Promise<JobResult> {

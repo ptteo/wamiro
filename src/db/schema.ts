@@ -9,6 +9,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  pgSchema,
   bigserial,
   boolean,
   char,
@@ -3093,5 +3094,134 @@ export const billingInvoices = pgTable(
   (t) => [
     uniqueIndex("billing_invoices_provider_key").on(t.providerInvoiceId),
     index("billing_invoices_org_billed_idx").on(t.organizationId, t.billedAt),
+  ],
+);
+
+// ============================================================================
+// Admin panel (Phase B-fix) — platform-owned data in a dedicated schema.
+// Separate from all tenant tables by design: the panel never writes tenant
+// tables, and tenants never read panel data. Billing rows use SOFT org
+// references + name/slug snapshots so revenue history survives tenant
+// deletion (operational tables use hard FKs and die with the tenant).
+// ============================================================================
+export const platform = pgSchema("platform");
+
+export const platformTenantUsageDaily = platform.table(
+  "tenant_usage_daily",
+  {
+    orgId: uuid("org_id").notNull(),
+    orgName: text("org_name").notNull().default(""),
+    orgSlug: text("org_slug").notNull().default(""),
+    day: date("day").notNull(),
+    plan: text("plan").notNull().default("starter"),
+    seatPriceCents: integer("seat_price_cents").notNull().default(0),
+    activeUsers: integer("active_users").notNull().default(0),
+    logins: integer("logins").notNull().default(0),
+    actions: integer("actions").notNull().default(0),
+    byModule: jsonb("by_module").$type<Record<string, number>>().notNull().default({}),
+    ticketsCreated: integer("tickets_created").notNull().default(0),
+    leaveRequests: integer("leave_requests").notNull().default(0),
+    documentsStored: integer("documents_stored").notNull().default(0),
+    storageBytes: bigint("storage_bytes", { mode: "number" }).notNull().default(0),
+    mutations: integer("mutations").notNull().default(0),
+    seatsActive: integer("seats_active").notNull().default(0),
+  },
+  (t) => [index("tenant_usage_daily_day_idx").on(t.day)],
+);
+
+export const platformBillingInvoices = platform.table(
+  "billing_invoices",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id"),
+    orgName: text("org_name").notNull().default(""),
+    orgSlug: text("org_slug").notNull().default(""),
+    number: text("number").notNull(),
+    providerInvoiceId: text("provider_invoice_id"),
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
+    amountCents: bigint("amount_cents", { mode: "number" }).notNull().default(0),
+    currency: char("currency", { length: 3 }).notNull().default("USD"),
+    status: text("status").notNull().default("open"),
+    source: text("source").notNull().default("manual"), // manual | paddle
+    hostedUrl: text("hosted_url"),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    lines: jsonb("lines").$type<{ desc: string; qty: number; unitCents: number; totalCents: number }[]>().notNull().default([]),
+    pdfKey: text("pdf_key"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("billing_invoices_number_key").on(t.number),
+    uniqueIndex("billing_invoices_provider_key").on(t.providerInvoiceId),
+    index("billing_invoices_org_issued_idx").on(t.orgId, t.issuedAt),
+  ],
+);
+
+export const platformBillingEvents = platform.table("billing_events", {
+  eventId: text("event_id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  orgId: uuid("org_id"),
+  orgName: text("org_name"),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const platformBillingPayments = platform.table(
+  "billing_payments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => platformBillingInvoices.id, { onDelete: "cascade" }),
+    amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+    method: text("method").notNull().default("card"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    providerRef: text("provider_ref"),
+    status: text("status").notNull().default("succeeded"), // succeeded | failed | refunded
+    recordedBy: uuid("recorded_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("billing_payments_invoice_idx").on(t.invoiceId)],
+);
+
+export const platformBillingCredits = platform.table(
+  "billing_credits",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    orgName: text("org_name").notNull(),
+    amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+    reason: text("reason").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("billing_credits_org_idx").on(t.orgId)],
+);
+
+export const platformDestructiveOps = platform.table(
+  "destructive_ops",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    kind: text("kind").notNull(), // cancel_subscription | delete_tenant
+    orgId: uuid("org_id").notNull(),
+    orgName: text("org_name").notNull(),
+    orgSlug: text("org_slug").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    reason: text("reason").notNull(),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+    status: text("status").notNull().default("pending"), // pending | approved | rejected | expired
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("destructive_ops_status_idx").on(t.status, t.createdAt),
+    index("destructive_ops_org_idx").on(t.orgId),
   ],
 );

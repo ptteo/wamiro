@@ -16,7 +16,7 @@ export interface BillingPlanCard {
 
 export interface BillingInvoiceRow {
   id: string;
-  providerInvoiceId: string;
+  providerInvoiceId: string | null; // null for manual invoices
   amountCents: number;
   currency: string;
   status: string;

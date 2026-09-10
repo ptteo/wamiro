@@ -8,7 +8,11 @@
 import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { billingEvents, billingInvoices, organizations } from "@/db/schema";
+import {
+  organizations,
+  platformBillingEvents as billingEvents,
+  platformBillingInvoices as billingInvoices,
+} from "@/db/schema";
 import { planFromPriceId } from "./adapter";
 import { mapPaddleSubscriptionStatus, type BillingStatus } from "./status";
 
@@ -48,6 +52,17 @@ function firstPriceId(data: Record<string, unknown>): string | null {
     if (nestedId) return nestedId;
   }
   return null;
+}
+
+interface OrgSnapshot { id: string; name: string; slug: string }
+
+async function orgSnapshot(orgId: string): Promise<OrgSnapshot | null> {
+  const [row] = await db
+    .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return row ?? null;
 }
 
 async function resolveOrgId(data: Record<string, unknown>): Promise<string | null> {
@@ -130,29 +145,39 @@ function invoiceAmountCents(data: Record<string, unknown>): number {
 async function upsertInvoice(orgId: string, data: Record<string, unknown>, occurredAt: string | null): Promise<void> {
   const providerInvoiceId = asString(data.invoice_id) ?? asString(data.id);
   if (!providerInvoiceId) return;
+  const org = await orgSnapshot(orgId);
+  if (!org) return;
   const checkout = nested(data, "checkout");
   const billedAtRaw = asString(data.billed_at) ?? asString(data.created_at) ?? occurredAt;
-  const billedAt = billedAtRaw ? new Date(billedAtRaw) : new Date();
+  const billedAt = Number.isNaN(new Date(billedAtRaw ?? 0).getTime()) ? new Date() : new Date(billedAtRaw!);
   const status = asString(data.status) ?? "paid";
+  const row = {
+    orgId: org.id,
+    orgName: org.name,
+    orgSlug: org.slug,
+    providerInvoiceId,
+    amountCents: invoiceAmountCents(data),
+    currency: asString(data.currency_code) ?? "USD",
+    status,
+    source: "paddle" as const,
+    hostedUrl: asString(checkout?.url),
+    issuedAt: billedAt,
+    paidAt: status === "paid" ? billedAt : null,
+  };
   await db
     .insert(billingInvoices)
-    .values({
-      organizationId: orgId,
-      providerInvoiceId,
-      amountCents: invoiceAmountCents(data),
-      currency: asString(data.currency_code) ?? "USD",
-      status,
-      hostedUrl: asString(checkout?.url),
-      billedAt: Number.isNaN(billedAt.getTime()) ? new Date() : billedAt,
-    })
+    .values({ ...row, number: `PDL-${providerInvoiceId}` })
     .onConflictDoUpdate({
       target: billingInvoices.providerInvoiceId,
       set: {
-        amountCents: invoiceAmountCents(data),
-        currency: asString(data.currency_code) ?? "USD",
-        status,
-        hostedUrl: asString(checkout?.url),
-        billedAt: Number.isNaN(billedAt.getTime()) ? new Date() : billedAt,
+        amountCents: row.amountCents,
+        currency: row.currency,
+        status: row.status,
+        hostedUrl: row.hostedUrl,
+        issuedAt: row.issuedAt,
+        paidAt: row.paidAt,
+        orgName: row.orgName,
+        orgSlug: row.orgSlug,
       },
     });
 }
@@ -206,7 +231,7 @@ export async function applyPaddleEvent(raw: unknown): Promise<ApplyResult> {
     .values({
       eventId,
       eventType,
-      organizationId: null,
+      orgId: null,
       payload: body ?? {},
     })
     .onConflictDoNothing()
@@ -218,7 +243,11 @@ export async function applyPaddleEvent(raw: unknown): Promise<ApplyResult> {
 
   const orgId = await resolveOrgId(data);
   if (orgId) {
-    await db.update(billingEvents).set({ organizationId: orgId }).where(eq(billingEvents.eventId, eventId));
+    const org = await orgSnapshot(orgId);
+    await db
+      .update(billingEvents)
+      .set({ orgId: org?.id ?? null, orgName: org?.name ?? null })
+      .where(eq(billingEvents.eventId, eventId));
     if (eventType.startsWith("subscription.")) {
       await applySubscription(orgId, eventType, data);
     } else if (eventType === "transaction.completed" || eventType === "transaction.paid") {
@@ -250,7 +279,7 @@ export async function invoiceCountForOrg(orgId: string): Promise<number> {
   const rows = await db
     .select({ id: billingInvoices.id })
     .from(billingInvoices)
-    .where(eq(billingInvoices.organizationId, orgId));
+    .where(eq(billingInvoices.orgId, orgId));
   return rows.length;
 }
 

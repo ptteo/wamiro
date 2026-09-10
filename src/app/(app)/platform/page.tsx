@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import { PlatformClient } from "@/components/platform-client";
 import { PlatformOpsClient } from "@/components/platform-ops-client";
 import { PlatformJobsCard } from "@/components/platform-jobs-card";
+import { PlatformUsageCard } from "@/components/platform-usage-card";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
@@ -14,7 +15,9 @@ import {
   platformSupportQueue,
   tenantRiskBoard,
 } from "@/modules/platform/console";
+import { listPending } from "@/modules/platform/destructive-ops";
 import { listJobLedger } from "@/modules/platform/jobs";
+import { moduleHeatmap, usageSummary } from "@/modules/platform/usage";
 
 export const metadata = { title: "Platform" };
 
@@ -28,7 +31,7 @@ export default async function PlatformPage() {
     );
   }
 
-  const [tenants, stats, riskTenants, grants, queue, ledger, storage, jobs] = await Promise.all([
+  const [tenants, stats, riskTenants, grants, queue, ledger, storage, jobs, pendingOps, usage, heatmap] = await Promise.all([
     listTenants(ctx),
     platformStats(ctx),
     tenantRiskBoard(ctx),
@@ -37,6 +40,11 @@ export default async function PlatformPage() {
     listImpersonationLedger(ctx),
     fleetStorage(ctx),
     listJobLedger(ctx),
+    listPending(ctx),
+    // Phase A — usage metering (fleet Usage tab); empty until the usage_rollup
+    // job has run, so a fresh deploy renders the empty-state, never an error.
+    usageSummary(ctx).catch(() => []),
+    moduleHeatmap(ctx, 30).catch(() => []),
   ]);
 
   return (
@@ -91,9 +99,37 @@ export default async function PlatformPage() {
           startedAt: l.startedAt.toISOString(),
           endedAt: l.endedAt ? l.endedAt.toISOString() : null,
         }))}
+        pendingOps={pendingOps.map((o) => ({
+          id: o.id,
+          kind: o.kind,
+          orgName: o.orgName,
+          reason: o.reason,
+          requestedBy: o.requestedBy,
+          requesterName: String(o.requesterName ?? ""),
+          createdAt: o.createdAt.toISOString(),
+        }))}
+        selfUserId={ctx.user.id}
       />
 
       <PlatformJobsCard jobs={jobs} />
+
+      <PlatformUsageCard
+        rows={usage.map((u) => ({
+          organizationId: u.organizationId,
+          name: u.name,
+          slug: u.slug,
+          plan: u.plan,
+          seatsActive: u.seatsActive,
+          activeActors7d: u.activeActors7d,
+          actions30d: u.actions30d,
+          logins30d: u.logins30d,
+          mutations30d: u.mutations30d,
+          storageBytes: u.storageBytes,
+          documentsStored: u.documentsStored,
+          lastActiveDay: u.lastActiveDay,
+        }))}
+        heatmap={heatmap}
+      />
 
       <PlatformClient
         tenants={tenants.map((t) => ({

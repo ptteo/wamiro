@@ -20,7 +20,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
 import type { AuthContext } from "@/lib/session";
-import { billingInvoices, organizations, organizationMemberships } from "@/db/schema";
+import { organizations, organizationMemberships, platformBillingInvoices as billingInvoices } from "@/db/schema";
 import {
   cancelPaddleSubscription,
   createCheckoutUrl,
@@ -37,7 +37,7 @@ export type { BillingStatus };
 
 export interface BillingInvoiceView {
   id: string;
-  providerInvoiceId: string;
+  providerInvoiceId: string | null; // null for manual invoices
   amountCents: number;
   currency: string;
   status: string;
@@ -162,11 +162,13 @@ export function upgradeUrlFor(): string | null {
 }
 
 async function invoicesFor(orgId: string): Promise<BillingInvoiceView[]> {
+  // The tenant reads only its OWN rows from the platform ledger (its billing
+  // mirror) — never another org's, and none of the panel-only columns.
   const rows = await db
     .select()
     .from(billingInvoices)
-    .where(eq(billingInvoices.organizationId, orgId))
-    .orderBy(desc(billingInvoices.billedAt), desc(billingInvoices.createdAt))
+    .where(eq(billingInvoices.orgId, orgId))
+    .orderBy(desc(billingInvoices.issuedAt), desc(billingInvoices.createdAt))
     .limit(50);
   return rows.map((r) => ({
     id: r.id,
@@ -175,7 +177,7 @@ async function invoicesFor(orgId: string): Promise<BillingInvoiceView[]> {
     currency: r.currency,
     status: r.status,
     hostedUrl: r.hostedUrl,
-    billedAt: r.billedAt ? r.billedAt.toISOString() : null,
+    billedAt: r.issuedAt ? r.issuedAt.toISOString() : null,
   }));
 }
 
