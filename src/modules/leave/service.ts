@@ -23,6 +23,7 @@ import {
   employeeMayRequestCancel,
   employeeMayWithdraw,
 } from "@/modules/leave/cancel";
+import { projectBalance } from "@/modules/leave/accrual";
 
 const YEAR = new Date().getFullYear();
 
@@ -134,6 +135,8 @@ export interface ApplyInput {
   startDate: string; // YYYY-MM-DD
   endDate: string;
   reason?: string;
+  /** Phase 8 — half-day leave: 'first_half' | 'second_half'. */
+  halfDay?: "first_half" | "second_half";
 }
 
 function businessDays(startStr: string, endStr: string): number {
@@ -147,8 +150,26 @@ function businessDays(startStr: string, endStr: string): number {
   return days;
 }
 
-/** Company holidays falling inside an inclusive date range (F3.4: not counted as leave days). */
-async function holidaysInRange(orgId: string, startStr: string, endStr: string): Promise<number> {
+const HALF_DAYS = new Set(["first_half", "second_half"]);
+
+/**
+ * Company holidays falling inside an inclusive date range (F3.4: not counted
+ * as leave days). Phase 8: holidays tagged with a `location` apply only when
+ * the requesting employee works at that location (employees.customFields
+ * `location`); null-location holidays apply to everyone.
+ */
+async function holidaysInRange(
+  orgId: string,
+  employeeUserId: string,
+  startStr: string,
+  endStr: string,
+): Promise<number> {
+  const [emp] = await db
+    .select({ location: sql<string | null>`${employees.customFields} ->> 'location'` })
+    .from(employees)
+    .where(and(eq(employees.userId, employeeUserId), eq(employees.organizationId, orgId)))
+    .limit(1);
+  const location = emp?.location ?? null;
   const [row] = await db
     .select({ c: sql<number>`count(*)::int` })
     .from(holidays)
@@ -157,6 +178,11 @@ async function holidaysInRange(orgId: string, startStr: string, endStr: string):
         eq(holidays.organizationId, orgId),
         gte(holidays.date, startStr),
         lte(holidays.date, endStr),
+        // holiday applies when it is global (null location) or matches the
+        // employee's location; employees without a location see global only
+        location
+          ? sql`(${holidays.location} IS NULL OR ${holidays.location} = ${location})`
+          : sql`${holidays.location} IS NULL`,
       ),
     );
   return row?.c ?? 0;
@@ -179,7 +205,15 @@ export async function apply(ctx: AuthContext, input: ApplyInput) {
 
   let days = businessDays(input.startDate, input.endDate);
   // company holidays inside the range are not charged leave days
-  days -= await holidaysInRange(ctx.user.organizationId, input.startDate, input.endDate);
+  days -= await holidaysInRange(ctx.user.organizationId, ctx.user.id, input.startDate, input.endDate);
+  // Phase 8 — half-day: only valid on a single-day request; costs 0.5 days.
+  const halfDay = input.halfDay && HALF_DAYS.has(input.halfDay) ? input.halfDay : null;
+  if (halfDay) {
+    if (input.startDate !== input.endDate) {
+      throw ApiError.badRequest("Half-day leave must be a single date");
+    }
+    days = 0.5;
+  }
   if (days <= 0) throw ApiError.badRequest("That period contains only company holidays");
 
   // balance check (only when a balance row exists)
@@ -210,6 +244,8 @@ export async function apply(ctx: AuthContext, input: ApplyInput) {
       startDate: input.startDate,
       endDate: input.endDate,
       days: String(days),
+      halfDay,
+      halfDayDate: halfDay ? input.startDate : null,
       reason: input.reason ?? null,
     })
     .returning()

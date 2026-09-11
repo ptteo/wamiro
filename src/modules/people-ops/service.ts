@@ -292,6 +292,90 @@ export async function getJourney(ctx: AuthContext, id: string) {
   return { ...journey.j, userName: journey.userName, items };
 }
 
+/**
+ * Phase 8 — exit clearance verify. Cross-checks an offboarding journey's
+ * item state against real module state: assets still assigned, open tickets,
+ * pending approvals. Returns a per-check pass/fail with detail — HR verifies
+ * every row passes before closing the exit.
+ */
+export async function verifyExitClearance(ctx: AuthContext, journeyId: string) {
+  if (!can(ctx.access, "lifecycle.manage")) throw ApiError.forbidden();
+  const [journey] = await db
+    .select({ id: journeys.id, userId: journeys.userId, kind: journeys.kind, status: journeys.status, userName: users.name })
+    .from(journeys)
+    .innerJoin(users, eq(users.id, journeys.userId))
+    .where(and(eq(journeys.id, journeyId), eq(journeys.organizationId, ctx.user.organizationId)))
+    .limit(1);
+  if (!journey) throw ApiError.notFound();
+  if (journey.kind !== "offboarding") throw ApiError.badRequest("Clearance verification applies to offboarding journeys");
+
+  const userId = journey.userId;
+  const orgId = ctx.user.organizationId;
+  const checks: { key: string; label: string; ok: boolean; detail: string }[] = [];
+
+  // 1. journey checklist itself
+  const [items] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      done: sql<number>`count(*) filter (where ${journeyItems.done})::int`,
+    })
+    .from(journeyItems)
+    .where(eq(journeyItems.journeyId, journeyId));
+  checks.push({
+    key: "checklist",
+    label: "Offboarding checklist",
+    ok: (items?.done ?? 0) >= (items?.total ?? 1),
+    detail: `${items?.done ?? 0}/${items?.total ?? 0} items done`,
+  });
+
+  // 2. no company assets still assigned
+  const [assetRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sql`assets`)
+    .where(sql`organization_id = ${orgId} AND assigned_to_user_id = ${userId}`);
+  checks.push({
+    key: "assets",
+    label: "All hardware returned",
+    ok: (assetRow?.n ?? 0) === 0,
+    detail: `${assetRow?.n ?? 0} asset(s) still assigned`,
+  });
+
+  // 3. no open support tickets
+  const [ticketRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sql`tickets`)
+    .where(sql`organization_id = ${orgId} AND requester_id = ${userId} AND status NOT IN ('resolved','closed')`);
+  checks.push({
+    key: "tickets",
+    label: "No open support tickets",
+    ok: (ticketRow?.n ?? 0) === 0,
+    detail: `${ticketRow?.n ?? 0} open ticket(s)`,
+  });
+
+  // 4. no pending leave requests
+  const [leaveRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sql`leave_requests`)
+    .where(sql`organization_id = ${orgId} AND user_id = ${userId} AND status = 'pending'`);
+  checks.push({
+    key: "leave",
+    label: "No pending leave requests",
+    ok: (leaveRow?.n ?? 0) === 0,
+    detail: `${leaveRow?.n ?? 0} pending request(s)`,
+  });
+
+  const allOk = checks.every((c) => c.ok);
+  await audit({
+    organizationId: orgId,
+    actorUserId: ctx.user.id,
+    action: allOk ? "EXIT_CLEARANCE_VERIFIED" : "EXIT_CLEARANCE_BLOCKED",
+    entityType: "journey",
+    entityId: journeyId,
+    newValue: { checks },
+  });
+  return { journeyId, employee: journey.userName, ok: allOk, checks };
+}
+
 export async function toggleJourneyItem(ctx: AuthContext, itemId: string, done: boolean) {
   const [item] = await db
     .select({ i: journeyItems, orgId: journeyItems.organizationId })

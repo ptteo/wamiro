@@ -67,14 +67,41 @@ export async function createGroup(ctx: AuthContext, input: { name: string; descr
   return inserted[0];
 }
 
-export async function updateGroup(ctx: AuthContext, id: string, input: { name: string; description?: string | null }) {
+export async function updateGroup(
+  ctx: AuthContext,
+  id: string,
+  input: {
+    name: string;
+    description?: string | null;
+    /** Phase 8 — per-group SLA overrides keyed by priority (hours). */
+    slaResolutionHours?: Record<string, number> | null;
+    slaFirstResponseHours?: Record<string, number> | null;
+    /** Phase 8 — business-hours calendar; null = 24×7. */
+    businessHours?: { days: number[]; start: string; end: string; tz?: string } | null;
+  },
+) {
   requireAgent(ctx);
+  const patch: Partial<typeof ticketGroups.$inferInsert> = {
+    name: input.name.trim().slice(0, 100),
+    description: input.description?.trim().slice(0, 300) || null,
+  };
+  if (input.slaResolutionHours !== undefined) {
+    patch.slaResolutionHours = sanitizeSlaMap(input.slaResolutionHours);
+  }
+  if (input.slaFirstResponseHours !== undefined) {
+    patch.slaFirstResponseHours = sanitizeSlaMap(input.slaFirstResponseHours);
+  }
+  if (input.businessHours !== undefined) {
+    const { validBusinessHours } = await import("@/modules/tickets/policy");
+    if (input.businessHours === null || validBusinessHours(input.businessHours)) {
+      patch.businessHours = input.businessHours;
+    } else {
+      throw ApiError.badRequest("Invalid business hours calendar");
+    }
+  }
   const updated = await db
     .update(ticketGroups)
-    .set({
-      name: input.name.trim().slice(0, 100),
-      description: input.description?.trim().slice(0, 300) || null,
-    })
+    .set(patch)
     .where(and(eq(ticketGroups.id, id), eq(ticketGroups.organizationId, ctx.user.organizationId)))
     .returning({ id: ticketGroups.id });
   if (!updated[0]) throw ApiError.notFound();
@@ -84,7 +111,19 @@ export async function updateGroup(ctx: AuthContext, id: string, input: { name: s
     action: "TICKET_GROUP_UPDATED",
     entityType: "ticket_group",
     entityId: id,
+    newValue: { sla: !!input.slaResolutionHours || !!input.slaFirstResponseHours, businessHours: !!input.businessHours },
   });
+}
+
+/** Keep only known priorities with sane hour values (0.25h … 720h). */
+function sanitizeSlaMap(v: Record<string, number> | null): Record<string, number> | null {
+  if (!v) return null;
+  const out: Record<string, number> = {};
+  for (const p of ["low", "medium", "high", "urgent"]) {
+    const n = v[p];
+    if (typeof n === "number" && n > 0 && n <= 720) out[p] = n;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 export async function deleteGroup(ctx: AuthContext, id: string) {

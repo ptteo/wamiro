@@ -13,7 +13,7 @@ import { ApiError } from "@/lib/errors";
 import { hashPassword } from "@/lib/password";
 import { enforceRateLimit } from "@/lib/ratelimit";
 import type { AuthContext } from "@/lib/session";
-import { assertSeatAvailable } from "@/modules/billing/service";
+import { assertSeatAvailable, syncSeatsAfterInvite } from "@/modules/billing/service";
 import { sendInviteEmail } from "@/lib/mail/activation";
 import {
   employees,
@@ -130,6 +130,7 @@ export async function inviteUser(
       entityId: existing.id,
     });
     void emit(ctx.user.organizationId, "user.invited", "user", existing.id, ctx.user.id, { email }).catch(() => {});
+    void syncSeatsAfterInvite(ctx.user.organizationId);
     return { userId: existing.id, linked: true };
   }
 
@@ -191,6 +192,7 @@ export async function inviteUser(
 
   // Phase C: fan the provisioning event out to the org's webhooks.
   void emit(ctx.user.organizationId, "user.created", "user", user.id, ctx.user.id, { email }).catch(() => {});
+  void syncSeatsAfterInvite(ctx.user.organizationId);
 
   return { userId: user.id, tempPassword };
 }

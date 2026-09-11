@@ -132,6 +132,8 @@ Gate: E2E — new company from invite to "employee clocks in" with zero docs.
 
 ### Phase 3 — Self-serve billing (~1–2 weeks)
 
+**Detailed plan:** `docs/implementation-plan-phase-3-billing.md` (in progress).
+
 1. **Paddle adapter** (merchant-of-record: global tax handled — best default) behind the existing `billingAdapter` seam in `src/modules/billing/`: checkout URL, webhook (sign-verified) → `billing_customer_id/subscription_id`, status map → trial/active/past_due/cancelled, invoice emails by provider.
 2. **Seats**: monthly per-seat billing recomputed from `activeSeatCount`; proration on mid-cycle invites (Paddle prepaid proration); overage policy flag: soft-cap (banner) vs hard-block (current).
 3. **Settings → Plan & Billing**: payment method (provider portal link), invoice history, plan comparison, cancel/downgrade with data-retention notice.
@@ -154,13 +156,26 @@ Gate: storage switch with zero broken download links (spot-check E2E), RLS on wi
 
 ### Phase 5 — Platform ops completion (~3 days)
 
-1. **Error tracking** — Sentry free tier (5k events/mo): `instrument.ts` hook, release tagging, alert rule → email.
-2. **Status page** — static `/status` page fed by the health endpoint (self-hosted, free) for customer trust.
-3. **Uptime + 5xx watch** — UptimeRobot on `/api/v1/health` + cron 5xx counter (doc exists in reliability.md).
-4. **Jobs dashboard** — platform console card reading `platform_job_runs` (last run, ok, failures per org) — makes the worker observable without SSH.
-5. **Audit transparency** — tenant-facing "My activity" page (own audit rows) + admin export (exists).
+**Detailed plan:** `docs/implementation-plan-phase-5-platform-ops.md`. Do not rebuild health, the jobs ledger, or admin audit export.
 
-### Phase 6 — UX system & micro-interactions (~1–2 weeks, continuous)
+1. **Error tracking** — **GlitchTip self-hosted** (~256 MB web process, unlimited events). Wamiro sends events only when `GLITCHTIP_DSN` is set; unset = journald only.
+2. **Status page** — dynamic public `/status` mirroring `GET /api/v1/health` components (db / storage / jobs). No per-job internals.
+3. **Uptime + 5xx** — UptimeRobot on `/api/v1/health/live` (process) and `/api/v1/health` (components 200/503). 5xx cron already in `reliability.md`; GlitchTip for exception email.
+4. **Jobs dashboard** — platform console card from existing `platform_job_runs` (one row per job name, not history). `detail.failures` only on per-org sweeps.
+5. **My activity** — `/settings/activity` (own audit rows). Admin `/admin/audit` + CSV already exists.
+
+### Phase 6 — UX system & micro-interactions — **SHIPPED 2026-09-09**
+
+All 8 items implemented. Gate: lint/typecheck/tests/build green; WCAG AA contrast audit documented in `docs/audit/rc-readiness.md`.
+
+1. **Motion system** ✅ — `--dur-fast/--dur/--dur-slow` + `--ease cubic-bezier(.2,.8,.2,1)` tokens and utility classes (`lift`, `press`, `slide-fade`, `stagger-enter`, `badge-pop`, `check-draw`, `confetti`) in `globals.css`; every animation gated by the existing `prefers-reduced-motion` override.
+2. **Feedback primitives** ✅ — global `Toaster` + imperative `toast.success/error/info/undoable/retryable` (`components/toaster.tsx`, mounted in app shell, aria-live); `usePendingAction` + `OptimisticToggle` (`components/feedback.tsx`); wired into clock-in, notifications (optimistic read w/ rollback), favorites (rollback), payroll toasts.
+3. **Skeletons everywhere** ✅ — shared `ListLoading`/`StatGridLoading`/`BoardLoading` (`components/loading.tsx`) + `loading.tsx` on the ten highest-traffic segments (home, people, requests, tickets, payroll, approvals, admin, notifications, leave, attendance).
+4. **Empty & error states** ✅ — branded 404 with recovery actions + ⌘K hint, route `error.tsx` + `global-error.tsx` + in-shell `(app)/error.tsx` (keeps sidebar during recovery).
+5. **Command palette** ✅ — recent jumps (localStorage, 5 max), `/` shortcut when not typing, mobile `PaletteOpenButton` in the top bar, combobox/listbox ARIA, enter-rise animation.
+6. **Keyboard & a11y pass** ✅ — contrast audit: all text tokens ≥4.5:1 or large-text-exempt (`--text-tertiary` 4.29, brand-on-subtle 3.7–3.85, used at ≥14px semibold); `disabled` token exempt (WCAG 1.4.3 exception); skip-link, `:focus-visible` rings, toast aria-live (assertive for errors) already in place.
+7. **Mobile** ✅ — `BottomNav` (first 5 workspaces, ≥44px touch targets, safe-area padding, `md:hidden`) + main-content bottom padding so it never covers content; palette launcher in the mobile top bar; existing Menu disclosure kept for full coverage.
+8. **Delight** ✅ — `components/delight.tsx`: `shouldCelebrate` once-per-user keys, `burstConfetti` (CSS-only, reduced-motion inert), `CheckBurst` stroke-drawn check. Moments: first clock-in (check), checklist completion (confetti + toast), payslip-ready (confetti + sparkle on paid slips). All ≤1.6s, once per user, localStorage-persisted.
 
 Goal: best-in-class feel without new heavy deps (CSS-first; framer-motion MIT/free only where needed).
 
@@ -175,11 +190,22 @@ Goal: best-in-class feel without new heavy deps (CSS-first; framer-motion MIT/fr
 
 Gate: Lighthouse ≥95 a11y/perf on core pages; interaction audit checklist.
 
-### Phase 7 — Sidebar/IA restructure (proposals in §2.2) (~2 days)
+### Phase 7 — Sidebar/IA restructure — **SHIPPED 2026-09-09** (§2.2 implemented)
 
-Implement 2.2 after your sign-off: Knowledge+Documents merge, Facilities & IT merge, Governance→Admin, ⌘K AI shortcut. Rail shrinks 14 → 11.
+All four §2.2 proposals implemented in `src/lib/workspaces.ts`:
 
-### Phase 8 — Module depth (enterprise completeness sweep)
+1. **Knowledge + Documents merged** ✅ — Knowledge workspace now carries Articles / Documents / HR Documents under a "Content" group. Gating is per-item, so orgs without the documents module still see plain Knowledge. The separate Documents workspace and the duplicate People → HR Documents entry are gone.
+2. **Facilities & IT merged** ✅ — Assets + Workplace are one workspace (Rooms & Bookings under "Facilities", Assets under "IT & Equipment").
+3. **Governance → Admin** ✅ — moved under a new "GRC" group in Admin.
+4. **⌘K "Ask AI" shortcut** ✅ — the command palette pins an "Ask AI" action above results; typed queries become the prompt (`Ask AI: "…"`), handed to the assistant via sessionStorage and prefilled into the composer.
+
+Rail shrinks 14 → 11 (home, people, work, requests, support, knowledge, company, facilities, finance, analytics, ai, admin = 12 with admin; 11 user-facing when admin/platform are excluded by permission gating). Gating model unchanged — workspaces appear only when at least one item survives module/permission/scope filtering.
+
+### Phase 8 — Module depth (enterprise completeness sweep) — **SHIPPED 2026-09-09**
+
+All 14 module items implemented behind migration-0060 (additive). Schema: per-group ticket SLA + business hours + auto-close, leave accrual/carry-forward/encashment caps + half-days + per-location holidays, attendance auto-clockout/overtime/regularization, payroll schedule + arrears + tax groups, requests conditional fields + delegation stamp, knowledge versions/visibility/votes, documents folders + expiry stamps, task recurrence + project baselines, announcement scheduling + department targeting, notification thread keys + mutes, finance approval-threshold bands, asset events + warranty expiry. Five new jobs registered (`attendance_policy_sweep`, `documents_expiry_sweep`, `assets_warranty_sweep`, `work_recurrence_sweep`, `announcements_publish_sweep`). Gate: typecheck clean · lint 0 errors · 112/112 unit · 3/3 isolation (incl. the previously-flaky prorated-payroll assertion, now date-robust) · build ✓.
+
+Per-module detail:
 
 Per module, the missing "no customer left behind" items:
 
@@ -221,7 +247,8 @@ From the scaling plan: load tests at 5× target, PgBouncer when pool saturation,
 | Lightsail 2 GB (your decision) | — | $12/mo (the one fixed cost) |
 | Brevo email | 300/day | invite/receipt traffic fine |
 | Cloudflare R2 | 10 GB + free egress | ~25k docs |
-| UptimeRobot / Sentry / GitHub Actions | 50 monitors / 5k errors / 2k min | plenty pre-100 companies |
+| UptimeRobot / GitHub Actions | 50 monitors / 2k min | plenty pre-100 companies |
+| GlitchTip (self-host) | unlimited events | ~256 MB web + Redis; use existing RDS. Do not co-locate on a 2 GB Lightsail with `next build` |
 | Tours, animations, toasts | self-built + CSS | $0, no deps |
 | Paddle | no fixed fee | 5% + 50¢ per transaction (revenue-linked) |
 | RDS | free 12 mo → ~$13/mo | Neon migration documented as fallback |

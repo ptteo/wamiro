@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { cx } from "@/lib/cx";
+import { toast } from "@/components/toaster";
 
 interface Item {
   id: string;
@@ -134,10 +135,15 @@ export function NotificationsClient({ items }: { items: Item[] }) {
   const [busy, setBusy] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  // Phase 6 §2 — optimistic read state: flips instantly, rolls back on error.
+  const [optimisticRead, setOptimisticRead] = useState<Record<string, boolean>>({});
 
   const visible = useMemo(
-    () => (filter === "unread" ? items.filter((i) => !i.read) : items),
-    [items, filter],
+    () =>
+      items
+        .map((i) => (i.id in optimisticRead ? { ...i, read: optimisticRead[i.id]! } : i))
+        .filter((i) => (filter === "unread" ? !i.read : true)),
+    [items, filter, optimisticRead],
   );
   const unread = items.filter((i) => !i.read).length;
 
@@ -157,14 +163,24 @@ export function NotificationsClient({ items }: { items: Item[] }) {
   }, [visible]);
 
   async function markRead(id: string) {
+    if (optimisticRead[id]) return;
+    setOptimisticRead((cur) => ({ ...cur, [id]: true }));
     setPendingId(id);
     try {
-      await fetch(`/api/v1/notifications/${id}`, {
+      const res = await fetch(`/api/v1/notifications/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "read" }),
       });
+      if (!res.ok) throw new Error("Could not mark as read");
       router.refresh();
+    } catch (e) {
+      setOptimisticRead((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      toast.error((e as Error).message);
     } finally {
       setPendingId(null);
     }
@@ -172,9 +188,17 @@ export function NotificationsClient({ items }: { items: Item[] }) {
 
   async function markAll() {
     setBusy(true);
+    const prev = optimisticRead;
+    // optimistic: flip everything visible
+    setOptimisticRead(Object.fromEntries(visible.map((i) => [i.id, true])));
     try {
-      await fetch("/api/v1/notifications/read-all", { method: "POST" });
+      const res = await fetch("/api/v1/notifications/read-all", { method: "POST" });
+      if (!res.ok) throw new Error("Could not mark all as read");
       router.refresh();
+      toast.success("All caught up");
+    } catch (e) {
+      setOptimisticRead(prev); // rollback
+      toast.error((e as Error).message);
     } finally {
       setBusy(false);
     }

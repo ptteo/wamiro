@@ -136,6 +136,9 @@ export async function createInvitation(
       entityId: existing.id,
     });
     void emit(ctx.user.organizationId, "user.invited", "user", existing.id, ctx.user.id, { email }).catch(() => {});
+    void import("@/modules/billing/service").then(({ syncSeatsAfterInvite }) =>
+      syncSeatsAfterInvite(ctx.user.organizationId),
+    );
     return { userId: existing.id, inviteId: existing.id, linked: true };
   }
 
@@ -198,6 +201,9 @@ export async function createInvitation(
     newValue: { email, roleKey: input.roleKey, via: "token" },
   });
   void emit(ctx.user.organizationId, "user.created", "user", user.id, ctx.user.id, { email }).catch(() => {});
+  void import("@/modules/billing/service").then(({ syncSeatsAfterInvite }) =>
+    syncSeatsAfterInvite(ctx.user.organizationId),
+  );
 
   return { userId: user.id, inviteId: invite!.id, inviteUrl };
 }

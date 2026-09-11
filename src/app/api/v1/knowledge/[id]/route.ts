@@ -9,6 +9,8 @@ const updateSchema = z.object({
   title: z.string().min(3).max(200),
   body: z.string().min(3).max(50_000),
   tags: z.array(z.string().min(1).max(30)).max(8).optional(),
+  visibility: z.enum(["company", "department", "draft"]).optional(),
+  departmentId: z.string().uuid().nullable().optional(),
 });
 
 export const PUT = route(

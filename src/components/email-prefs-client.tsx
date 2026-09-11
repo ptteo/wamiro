@@ -10,6 +10,7 @@ const KINDS = [
   ["ticket", "Tickets"],
   ["announcement", "Announcements"],
   ["task", "Tasks"],
+  ["billing", "Billing"],
   ["system", "System"],
 ] as const;
 

@@ -1,6 +1,9 @@
 import { cookies } from "next/headers";
+import Link from "next/link";
 
 import { AppGates } from "@/components/app-gates";
+import { BottomNav } from "@/components/bottom-nav";
+import { Toaster } from "@/components/toaster";
 import { TourMount } from "@/components/tour-mount";
 import { ImpersonationBanner } from "@/components/impersonation-banner";
 import { LogoutButton } from "@/components/logout-button";
@@ -8,6 +11,7 @@ import {
   ActiveWorkspaceLabel,
   MobileWorkspaceMenu,
 } from "@/components/mobile-nav";
+import { PaletteOpenButton } from "@/components/command-palette";
 import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import { requireAuthPage } from "@/lib/page-auth";
 import {
@@ -141,6 +145,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       {impersonating ? (
         <ImpersonationBanner orgName={org.name} targetName={ctx.user.name} />
       ) : null}
+      {ctx.org.billingStatus === "past_due" ? (
+        <div
+          role="status"
+          className="sticky top-0 z-[var(--z-sticky)] border-b border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm text-primary"
+        >
+          Payment for this workspace failed.{" "}
+          <Link href="/settings/billing" className="font-medium text-brand underline-offset-2 hover:underline">
+            Update billing
+          </Link>{" "}
+          to keep access.
+        </div>
+      ) : null}
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:shadow"
@@ -190,6 +206,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
+              <PaletteOpenButton />
               <MobileWorkspaceMenu workspaces={shellWorkspaces} />
               <LogoutButton compact />
             </span>
@@ -197,16 +214,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
           <main
             id="main"
-            className="mx-auto flex w-full min-h-0 min-w-0 max-w-5xl flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6 sm:py-8 has-[[data-fill-workspace]]:max-w-none has-[[data-fill-workspace]]:overflow-hidden has-[[data-fill-workspace]]:px-0 has-[[data-fill-workspace]]:py-0"
+            className="mx-auto flex w-full min-h-0 min-w-0 max-w-5xl flex-1 flex-col overflow-y-auto px-4 py-6 pb-20 sm:px-6 sm:py-8 md:pb-6 has-[[data-fill-workspace]]:max-w-none has-[[data-fill-workspace]]:overflow-hidden has-[[data-fill-workspace]]:px-0 has-[[data-fill-workspace]]:py-0"
           >
             <AppGates
               mfaRequired={needsMfaSetup(ctx)}
               onboardingIncomplete={!onboardingComplete(org.onboardingState)}
             >
-              {children}
+              <Toaster>{children}</Toaster>
             </AppGates>
             <TourMount />
           </main>
+          {/* Phase 6 §7 — mobile bottom nav: first 5 workspaces, ≥44px targets */}
+          <BottomNav workspaces={shellWorkspaces} />
         </div>
       </div>
     </div>

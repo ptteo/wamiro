@@ -9,7 +9,7 @@ import { can, widestScope } from "@/modules/iam/engine";
 
 export async function listHolidays(ctx: AuthContext) {
   return db
-    .select({ id: holidays.id, name: holidays.name, date: holidays.date })
+    .select({ id: holidays.id, name: holidays.name, date: holidays.date, location: holidays.location })
     .from(holidays)
     .where(eq(holidays.organizationId, ctx.user.organizationId))
     .orderBy(asc(holidays.date));
@@ -20,7 +20,7 @@ export async function listHolidaysInYear(ctx: AuthContext, year: number) {
   const start = `${year}-01-01`;
   const end = `${year}-12-31`;
   return db
-    .select({ id: holidays.id, name: holidays.name, date: holidays.date })
+    .select({ id: holidays.id, name: holidays.name, date: holidays.date, location: holidays.location })
     .from(holidays)
     .where(
       and(
@@ -64,7 +64,7 @@ export async function viewerOwnLeave(
   }));
 }
 
-export async function addHoliday(ctx: AuthContext, input: { name: string; date: string }) {
+export async function addHoliday(ctx: AuthContext, input: { name: string; date: string; location?: string | null }) {
   if (!can(ctx.access, "settings.manage")) {
     throw ApiError.forbidden("Missing permission: settings.manage");
   }
@@ -74,6 +74,7 @@ export async function addHoliday(ctx: AuthContext, input: { name: string; date: 
       organizationId: ctx.user.organizationId,
       name: input.name.trim().slice(0, 80),
       date: input.date,
+      location: input.location?.trim().slice(0, 80) || null,
     })
     .onConflictDoNothing()
     .returning({ id: holidays.id });

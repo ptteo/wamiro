@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { emailKindAllowed, groupDigest, inQuietHours, parseEmailPrefs } from "@/lib/email-prefs";
@@ -35,11 +35,78 @@ export interface NotifyInput {
   title: string;
   body?: string | null;
   link?: string | null;
+  /** Phase 8 — conversation/thread identity for muting + grouping. */
+  threadKey?: string | null;
+}
+
+/** Read a JSONB user preference (org-scoped first, then global). */
+async function readPref(userId: string, orgId: string, key: string): Promise<unknown> {
+  const rows = await db
+    .select({ value: userPreferences.value, org: userPreferences.organizationId })
+    .from(userPreferences)
+    .where(and(eq(userPreferences.userId, userId), eq(userPreferences.key, key)));
+  let raw: unknown;
+  for (const r of rows) {
+    if (r.org === null || r.org === orgId) raw = r.value;
+  }
+  return raw;
+}
+
+/** Write a JSONB user preference (org-scoped for this user). */
+async function writePref(userId: string, orgId: string, key: string, value: unknown): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO user_preferences (user_id, organization_id, key, value)
+    VALUES (${userId}, ${orgId}, ${key}, ${JSON.stringify(value)}::jsonb)
+    ON CONFLICT (user_id, organization_id, key)
+    DO UPDATE SET value = ${JSON.stringify(value)}::jsonb, updated_at = now()
+  `);
+}
+
+/** Phase 8 — muted notification families (e.g. ["ticket","attendance"]). */
+async function typeMuted(userId: string, orgId: string, type: string): Promise<boolean> {
+  const raw = await readPref(userId, orgId, "notifMuted");
+  const muted = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+  return muted.some((m) => type === m || type.startsWith(`${m}.`));
+}
+
+/** Phase 8 — get the caller's muted families. */
+export async function getMutedTypes(ctx: AuthContext): Promise<string[]> {
+  const raw = await readPref(ctx.user.id, ctx.user.organizationId, "notifMuted");
+  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+}
+
+/** Phase 8 — replace the caller's muted families. */
+export async function setMutedTypes(ctx: AuthContext, types: string[]): Promise<string[]> {
+  const clean = [...new Set(types.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 30);
+  await writePref(ctx.user.id, ctx.user.organizationId, "notifMuted", clean);
+  return clean;
+}
+
+/** Phase 8 — mute/unmute a thread (e.g. a ticket reply chain) by threadKey. */
+export async function setThreadMuted(ctx: AuthContext, threadKey: string, muted: boolean): Promise<void> {
+  const key = `threadMute:${threadKey.trim().slice(0, 120)}`;
+  if (muted) {
+    await writePref(ctx.user.id, ctx.user.organizationId, key, true);
+  } else {
+    await db
+      .delete(userPreferences)
+      .where(and(eq(userPreferences.userId, ctx.user.id), eq(userPreferences.key, key)));
+  }
+}
+
+export async function threadMuted(userId: string, orgId: string, threadKey: string): Promise<boolean> {
+  const raw = await readPref(userId, orgId, `threadMute:${threadKey.trim().slice(0, 120)}`);
+  return raw === true;
 }
 
 /** Fire-and-forget notification: in-app row + optional SMTP email fan-out. */
 export async function notify(input: NotifyInput): Promise<void> {
+  // Phase 8 — per-type in-app mute: a user can silence whole notification
+  // families (e.g. "ticket", "attendance"). Muted types skip the in-app row
+  // entirely (email is already gated separately by emailKindAllowed).
   try {
+    if (await typeMuted(input.userId, input.organizationId, input.type)) return;
+    if (input.threadKey && (await threadMuted(input.userId, input.organizationId, input.threadKey))) return;
     await db.insert(notifications).values({
       organizationId: input.organizationId,
       userId: input.userId,
@@ -47,6 +114,7 @@ export async function notify(input: NotifyInput): Promise<void> {
       title: input.title,
       body: input.body ?? null,
       link: input.link ?? null,
+      threadKey: input.threadKey ?? null,
     });
   } catch (e) {
     console.error(JSON.stringify({ level: "error", msg: "notify_failed", type: input.type, err: String(e) }));

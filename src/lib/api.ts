@@ -12,6 +12,7 @@ import {
   type AuthContext,
 } from "./session";
 import { can } from "@/modules/iam/engine";
+import { captureException } from "@/lib/glitchtip";
 
 export interface RouteMeta {
   requestId: string;
@@ -151,6 +152,12 @@ export function route(
         return err;
       }
       console.error(JSON.stringify({ level: "error", requestId, path: req.nextUrl.pathname, err: String(e), cause: String((e as { cause?: unknown }).cause ?? "") }));
+      captureException(e, {
+        requestId,
+        path: req.nextUrl.pathname,
+        orgId: auth?.user.organizationId,
+        userId: auth?.user.id,
+      });
       return NextResponse.json(
         {
           error: {

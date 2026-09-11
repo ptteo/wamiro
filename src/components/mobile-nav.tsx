@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Building2, ChevronDown, CreditCard, Shield } from "lucide-react";
+import { Building2, ChevronDown, CreditCard, History, Shield } from "lucide-react";
 
 import { cx } from "@/lib/cx";
 import {
@@ -146,6 +146,14 @@ export function MobileWorkspaceMenu({ workspaces }: { workspaces: ShellNavWorksp
             >
               <Shield className="h-3.5 w-3.5" strokeWidth={1.75} />
               Security
+            </Link>
+            <Link
+              href="/settings/activity"
+              onClick={() => setOpen(false)}
+              className="flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-secondary hover:bg-surface-hover hover:text-primary"
+            >
+              <History className="h-3.5 w-3.5" strokeWidth={1.75} />
+              My activity
             </Link>
             <Link
               href="/settings/billing"

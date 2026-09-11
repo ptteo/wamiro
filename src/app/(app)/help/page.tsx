@@ -58,6 +58,13 @@ export default async function HelpPage() {
           <ContactSupportForm />
         </div>
       </Card>
+
+      <p className="text-sm text-tertiary">
+        <Link href="/status" className="text-brand-text hover:underline">
+          System status
+        </Link>
+        {" — "}public health of this Wamiro instance.
+      </p>
     </div>
   );
 }

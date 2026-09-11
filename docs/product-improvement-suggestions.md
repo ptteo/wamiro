@@ -73,5 +73,5 @@ Ordered by impact; each item is independently shippable.
 - **Demo tenant seed** — `src/db/seed.ts` exists; build a richer demo org
   (employees, shifts, payroll run, tickets, CSAT) so sales/demo cycles take
   minutes, not setup effort.
-- **Importers** (`import-frappe-employees.mjs`, `import-zammad-tickets.mjs`)
-  — validate them against real exports and document column requirements.
+- **CSV import** — Admin bulk user import already exists; extend it if a
+  customer needs a one-shot employee/ticket dump from another system.

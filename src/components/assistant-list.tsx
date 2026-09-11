@@ -413,6 +413,22 @@ export function AssistantListClient(ctx: AssistantContext) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Phase 7 (§2.2): ⌘K "Ask AI" action hands its prompt over via sessionStorage.
+  // Consume once on mount and prefill the composer (focus it too).
+  useEffect(() => {
+    try {
+      const prefill = sessionStorage.getItem("wamiro-ai-prompt");
+      if (prefill) {
+        sessionStorage.removeItem("wamiro-ai-prompt");
+        setDraft(prefill);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      }
+    } catch {
+      /* storage unavailable — nothing to prefill */
+    }
+    // mount-only by design: the prompt is handed over exactly once
+  }, []);
+
   // Reset messages when conversation changes
   useEffect(() => {
     setMessages(ctx.initialMessages);

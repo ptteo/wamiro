@@ -118,9 +118,10 @@ Keep 14 days; copy off-instance weekly. Test restores quarterly.
 
 ## 7. Health check & monitoring
 
-`GET /api/v1/health` returns `{"ok":true,"db":true}` (HTTP 200) when the app
-and database are reachable, 503 otherwise. Point uptime monitoring at it, e.g.
-UptimeRobot (free) or a systemd timer with curl.
+`GET /api/v1/health` returns component status (database, storage, jobs) and
+HTTP 200 when all gates pass, 503 otherwise. `GET /api/v1/health/live` is
+process-only. Point UptimeRobot at **both** (availability vs components).
+Public page: `/status`. See `docs/ops/reliability.md`.
 
 ## 8. Updates
 
@@ -134,3 +135,21 @@ sudo systemctl restart wamiro
 ```
 
 Rollback: redeploy previous git tag; migrations are additive by policy.
+
+## 9. Remove leftover Zammad / Frappe HR
+
+Older boxes sometimes still run Zammad (Docker + Elasticsearch) and Frappe HR
+(bench + MariaDB + Redis). Wamiro does not use them — people, attendance,
+leave, payroll, and tickets are native. Leaving them running will OOM a 2–4 GB
+instance during `next build`.
+
+```bash
+cd /opt/wamiro   # or copy scripts/remove-zammad-frappe.sh onto the box
+sudo CONFIRM=yes bash scripts/remove-zammad-frappe.sh
+free -h          # Elasticsearch + MariaDB RAM should be gone
+```
+
+The script never touches `/opt/wamiro`, `wamiro.service`, Caddy's Wamiro
+vhost, Node, or RDS. It archives `/opt/zammad` and `/opt/frappe-bench` under
+`/var/backups/wamiro-legacy-*` before deleting them. Optional
+`PURGE_PACKAGES=1` also apt-removes idle MariaDB/Redis/nginx.

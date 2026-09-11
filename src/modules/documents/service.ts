@@ -23,6 +23,10 @@ const BLOCKED_EXTENSIONS = [
 export interface DocumentRow {
   id: string;
   category: string;
+  /** Phase 8 — folder grouping label */
+  folder: string;
+  /** Phase 8 — stale-after date (drives expiry reminders) */
+  expiresAt: string | null;
   fileName: string;
   mimeType: string;
   sizeBytes: number;
@@ -41,6 +45,8 @@ export async function listVisible(ctx: AuthContext): Promise<DocumentRow[]> {
     .select({
       id: documents.id,
       category: documents.category,
+      folder: documents.folder,
+      expiresAt: documents.expiresAt,
       fileName: documents.fileName,
       mimeType: documents.mimeType,
       sizeBytes: documents.sizeBytes,
@@ -80,7 +86,7 @@ export async function listVisible(ctx: AuthContext): Promise<DocumentRow[]> {
 export async function upload(
   ctx: AuthContext,
   file: { name: string; mimeType: string; data: Buffer },
-  opts: { category?: string; ownerUserId?: string | null },
+  opts: { category?: string; ownerUserId?: string | null; folder?: string | null; expiresAt?: string | null },
 ) {
   if (!can(ctx.access, "documents.upload")) {
     throw ApiError.forbidden("Missing permission: documents.upload");
@@ -121,6 +127,8 @@ export async function upload(
         uploadedBy: ctx.user.id,
         category,
         ownerUserId,
+        folder: opts.folder?.trim().slice(0, 80) || "General",
+        expiresAt: /^\d{4}-\d{2}-\d{2}$/.test(opts.expiresAt ?? "") ? opts.expiresAt! : null,
         fileName: file.name.slice(0, 255),
         mimeType: file.mimeType || "application/octet-stream",
         sizeBytes: file.data.length,

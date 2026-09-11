@@ -26,7 +26,7 @@ export default async function ToolkitPage() {
     <Content width="wide">
       <PageHeader
         title="Agent Toolkit"
-        subtitle="Canned responses and macros speed up everyday ticket work — no Zammad required."
+        subtitle="Canned responses and macros speed up everyday ticket work."
       />
       <ToolkitAdminClient
         data={{

@@ -74,13 +74,16 @@ old unit if it was enabled.
 
 Alerting (free tier):
 
-1. **UptimeRobot** (or similar) monitor on `https://<host>/api/v1/health`,
-   5-minute interval, alert on non-200 → pages on DB/storage/worker failures.
+1. **UptimeRobot** — two monitors, 5-minute interval, alert on non-200:
+   - Availability: `https://<host>/api/v1/health/live`
+   - Components: `https://<host>/api/v1/health` (503 = db/storage/jobs stale)
+   Public status page: `https://<host>/status` (same component model; no job internals).
 2. **5xx spike watch** — example cron on the VM:
    ```bash
    */10 * * * * journalctl -u wamiro --since "-10 min" | grep -c '"status":5' | awk '$1>20{exit 1}' || echo "5xx spike on wamiro" | mail -s alert ops@example.com
    ```
-3. **Structured logs** — every request logs one JSON line (requestId, orgId,
+3. **Unhandled exceptions** — GlitchTip email on new issues (`docs/ops/glitchtip.md`).
+4. **Structured logs** — every request logs one JSON line (requestId, orgId,
    userId, status, durationMs); job runs log `job_finished` lines. Ship
    journald to any log sink; grep-able fields are stable.
 

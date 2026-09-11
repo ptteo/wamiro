@@ -12,6 +12,7 @@ export const GET = route(async (_req, { auth }) => {
 const addSchema = z.object({
   name: z.string().min(2).max(80),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  location: z.string().max(80).nullable().optional(),
 });
 
 export const POST = route(

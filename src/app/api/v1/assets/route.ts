@@ -17,6 +17,7 @@ const createSchema = z.object({
   name: z.string().min(2).max(120),
   category: z.enum(["laptop", "phone", "monitor", "other"]).optional(),
   serialNumber: z.string().max(120).nullish(),
+  warrantyExpiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
 });
 
 export const POST = route(
@@ -27,6 +28,7 @@ export const POST = route(
       name: parsed.data.name,
       category: parsed.data.category,
       serialNumber: parsed.data.serialNumber ?? null,
+      warrantyExpiresAt: parsed.data.warrantyExpiresAt ?? null,
     });
     return NextResponse.json({ ok: true, id }, { status: 201 });
   },

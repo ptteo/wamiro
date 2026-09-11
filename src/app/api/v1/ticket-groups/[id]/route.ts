@@ -5,9 +5,23 @@ import { route } from "@/lib/api";
 import { ApiError } from "@/lib/errors";
 import { deleteGroup, updateGroup } from "@/modules/ticket-groups/service";
 
+const slaMap = z.record(z.number().positive().max(720)).nullable().optional();
+const businessHours = z
+  .object({
+    days: z.array(z.number().int().min(1).max(7)).max(7),
+    start: z.string().regex(/^\d{1,2}:\d{2}$/),
+    end: z.string().regex(/^\d{1,2}:\d{2}$/),
+    tz: z.string().max(64).optional(),
+  })
+  .nullable()
+  .optional();
+
 const patchSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(300).nullable().optional(),
+  slaResolutionHours: slaMap,
+  slaFirstResponseHours: slaMap,
+  businessHours,
 });
 
 export const PATCH = route(

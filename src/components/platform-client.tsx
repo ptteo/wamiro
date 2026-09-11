@@ -118,8 +118,32 @@ export function PlatformClient({
   }
 
   function cancelSubscription(t: Tenant) {
-    if (!confirm(`Cancel ${t.name}'s subscription? All users will lose access until reactivated.`)) return;
-    void act(t.id, () => fetch(`/api/v1/platform/orgs/${t.id}/billing`, { method: "DELETE" }));
+    const reason = prompt(`Cancel ${t.name}'s subscription?
+Paid tenants need a second operator's approval.
+Reason (min 5 chars):`);
+    if (!reason || reason.trim().length < 5) return;
+    void (async () => {
+      setBusy(t.id);
+      setError(null);
+      try {
+        const res = await fetch(`/api/v1/platform/orgs/${t.id}/billing`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: reason.trim() }),
+        });
+        const d = (await res.json()) as { pending?: boolean; message?: string; error?: { message?: string } };
+        if (!res.ok) {
+          setError(d.error?.message ?? "Action failed");
+          return;
+        }
+        if (d.pending) {
+          window.alert(d.message ?? "Cancellation queued for a second operator's approval.");
+        }
+        router.refresh();
+      } finally {
+        setBusy(null);
+      }
+    })();
   }
 
   return (

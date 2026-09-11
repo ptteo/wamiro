@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 
 import { route } from "@/lib/api";
-import { pingDb } from "@/lib/session";
+import { snapshotHealth } from "@/lib/health";
 
-/** Readiness: dependencies reachable. 503 when the DB is down. */
+/** Readiness: same component gates as GET /api/v1/health. */
 export const GET = route(
   async () => {
-    const db = await pingDb();
-    return NextResponse.json({ ok: db, db }, { status: db ? 200 : 503 });
+    const body = await snapshotHealth();
+    return NextResponse.json(
+      { ok: body.ok, db: body.components.database === "healthy", components: body.components },
+      { status: body.ok ? 200 : 503 },
+    );
   },
   { auth: false },
 );

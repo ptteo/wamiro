@@ -40,6 +40,8 @@ export interface TypeFieldInput {
   type: "text" | "textarea" | "number" | "date" | "select";
   required?: boolean;
   options?: string[];
+  /** Phase 8 — conditional visibility */
+  visibleIf?: { key: string; values?: string[] };
 }
 
 export interface WorkflowStepInput {
@@ -105,6 +107,7 @@ function validateFieldDefs(fields: TypeFieldInput[]): RequestTypeField[] {
       type: f.type,
       required: !!f.required,
       options: f.type === "select" ? f.options!.slice(0, 12).map((o) => o.trim()).filter(Boolean) : undefined,
+      visibleIf: f.visibleIf?.key ? { key: f.visibleIf.key.slice(0, 40), values: f.visibleIf.values?.slice(0, 12) } : undefined,
     });
   }
   return out;
@@ -269,7 +272,21 @@ export async function deactivateType(ctx: AuthContext, typeId: string) {
 
 function validatePayload(fields: RequestTypeField[], payload: Record<string, unknown>) {
   const out: Record<string, string | number | null> = {};
+  // Phase 8 — conditional fields: a field with `visibleIf: {key, values?}` is
+  // only expected/required when the trigger field's value matches (or is
+  // non-empty when `values` is omitted). Hidden fields are dropped, not
+  // rejected, so stale client state never blocks submission.
+  const isFieldVisible = (f: RequestTypeField): boolean => {
+    const cond = f.visibleIf;
+    if (!cond) return true;
+    const trigger = payload[cond.key];
+    if (cond.values && Array.isArray(cond.values) && cond.values.length > 0) {
+      return cond.values.map(String).includes(String(trigger));
+    }
+    return trigger !== undefined && trigger !== null && trigger !== "";
+  };
   for (const f of fields) {
+    if (!isFieldVisible(f)) continue;
     const raw = payload[f.key];
     if (raw === undefined || raw === null || raw === "") {
       if (f.required) throw ApiError.badRequest(`"${f.label}" is required`);
@@ -297,9 +314,10 @@ function validatePayload(fields: RequestTypeField[], payload: Record<string, unk
         out[f.key] = String(raw);
     }
   }
-  // reject unexpected keys
+  // reject unexpected keys (visible fields only — hidden conditionals are dropped)
   for (const k of Object.keys(payload)) {
-    if (!fields.some((f) => f.key === k)) {
+    const f = fields.find((x) => x.key === k);
+    if (!f || !isFieldVisible(f)) {
       throw ApiError.badRequest(`Unknown field: ${k}`);
     }
   }
@@ -610,6 +628,7 @@ export async function review(
 
   // per-step authorization
   let authorized = false;
+  let delegated = false; // Phase 8 — acting on behalf of a delegator
   if (step.approverMode === "company") {
     authorized = companyWide;
   } else {
@@ -623,6 +642,16 @@ export async function review(
       .where(and(eq(employees.userId, req.requesterId), managerFilter))
       .limit(1);
     authorized = !!report;
+    // The reviewer is a delegate when the requester's manager is NOT the
+    // reviewer but IS one of the reviewer's delegators.
+    if (authorized) {
+      const [mgr] = await db
+        .select({ managerUserId: employees.managerUserId })
+        .from(employees)
+        .where(and(eq(employees.userId, req.requesterId), eq(employees.organizationId, orgId)))
+        .limit(1);
+      delegated = !!mgr?.managerUserId && mgr.managerUserId !== ctx.user.id && actorIds.includes(mgr.managerUserId);
+    }
   }
   if (!authorized) throw ApiError.forbidden("Not authorized for this approval step");
 
@@ -634,6 +663,7 @@ export async function review(
         reviewedBy: ctx.user.id,
         reviewedAt: new Date(),
         reviewNote: note ?? null,
+        decidedByDelegate: delegated,
       })
       .where(and(eq(requests.id, requestId), eq(requests.status, "pending")));
 
@@ -671,6 +701,7 @@ export async function review(
             reviewedBy: ctx.user.id,
             reviewedAt: new Date(),
             reviewNote: note ?? null,
+            decidedByDelegate: delegated,
           }
         : {}),
     })
