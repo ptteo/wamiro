@@ -128,6 +128,9 @@ export async function sweepDunning(now: Date = new Date(), onlyOrgId?: string): 
     const next = [...STAGES].reverse().find((s) => days >= s && org.dunningStage < s);
     if (next === undefined) continue;
     await sendDunning(org.id, org.name, next);
+    // Phase C — dunning comms auto-log as a system touchpoint (CRM-lite).
+    const { logDunningTouchpoint } = await import("@/modules/platform/crm");
+    await logDunningTouchpoint(org.id, next);
     await db
       .update(organizations)
       .set({ dunningStage: next, updatedAt: now })

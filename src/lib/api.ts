@@ -90,7 +90,15 @@ export function route(
         // Shared (DB-backed) so it holds across instances. Reads are exempt
         // to keep the DB write cost off the hot GET path.
         if (req.method !== "GET" && req.method !== "HEAD") {
-          const orgLimit = Number(process.env.RATE_LIMIT_ORG_PER_MIN ?? 600);
+          // Phase F — per-org limit.api_per_min entitlement overrides the
+          // default (60 s cache; fail-open to the default on any error).
+          let orgLimit = Number(process.env.RATE_LIMIT_ORG_PER_MIN ?? 600);
+          try {
+            const { apiRateOverride } = await import("@/modules/platform/entitlements");
+            orgLimit = (await apiRateOverride(auth.user.organizationId)) ?? orgLimit;
+          } catch {
+            /* entitlement read is best-effort */
+          }
           await enforceRateLimit("org", auth.user.organizationId, {
             limit: orgLimit,
             windowSeconds: 60,

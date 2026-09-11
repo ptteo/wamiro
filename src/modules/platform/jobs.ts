@@ -30,6 +30,8 @@ import { sweepExpiredTrials } from "@/modules/billing/service";
 import { sweepDunning } from "@/modules/billing/dunning";
 import { pollAllMailboxes } from "@/modules/mailboxes/service";
 import { rollupRecentUsage } from "@/modules/platform/usage";
+import { rollupRecentHealth } from "@/modules/platform/health";
+import { evaluateAlerts } from "@/modules/platform/alerts";
 import { sendWeeklyDigests } from "@/modules/notifications/service";
 import { purgeDueDeletions } from "@/modules/org/service";
 import { runRetentionSweep } from "@/modules/retention/service";
@@ -46,7 +48,14 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   governance_sweep: { run: runPerOrgGovernanceSweep, everyMs: 60 * 60_000 },
   mailbox_poll: { run: runMailboxPoll, everyMs: 60_000 },
   usage_rollup: { run: runUsageRollup, everyMs: 60 * 60_000 },
+  // Admin panel Phase D — health scores + alert playbooks (§3.2/§3.5)
+  health_rollup: { run: runHealthRollup, everyMs: 60 * 60_000 },
+  alert_evaluator: { run: runAlertEvaluator, everyMs: 60 * 60_000 },
   email_digest: { run: runEmailDigest, everyMs: 60 * 60_000 },
+  // fold-in #2 (weekly operator digest — Mondays) + #13 (monthly operator
+  // self-audit). Both early-exit unless it's their day; the hourly tick keeps
+  // them punctual without a second scheduler.
+  operator_digest: { run: runOperatorDigest, everyMs: 60 * 60_000 },
   // Phase 4 — data-layer housekeeping
   retention_sweep: { run: runRetentionSweepJob, everyMs: 12 * 60 * 60_000 },
   deletion_sweep: { run: runDeletionSweepJob, everyMs: 60 * 60_000 },
@@ -165,8 +174,55 @@ async function runEmailDigest(): Promise<JobResult> {
 }
 
 async function runUsageRollup(): Promise<JobResult> {
-  const { orgs, days } = await rollupRecentUsage();
-  return { ok: true, detail: { orgs, days } };
+  const { orgs, days, pruned } = await rollupRecentUsage();
+  // Ledger retention rides the same hourly tick (amendment #8: every ledger
+  // table is bounded; health scores prune inside rollupRecentHealth).
+  let ledgerPruned: Record<string, number> = {};
+  try {
+    const { pruneLedgerRetention } = await import("@/modules/platform/billing-ledger");
+    ledgerPruned = await pruneLedgerRetention();
+  } catch (e) {
+    ledgerPruned = { error: String(e).slice(0, 120) } as unknown as Record<string, number>;
+  }
+  return { ok: true, detail: { orgs, days, pruned, ledgerPruned } };
+}
+
+/** Phase D — yesterday (final) + today (provisional) health scores + retention prune. */
+async function runHealthRollup(): Promise<JobResult> {
+  try {
+    const r = await rollupRecentHealth();
+    return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Phase D — evaluate alert rules (weekly-window dedupe makes this idempotent). */
+async function runAlertEvaluator(): Promise<JobResult> {
+  try {
+    const r = await evaluateAlerts();
+    return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** fold-in #2 + #13 — Monday: weekly tenant digest; 1st of month: operator self-audit. */
+async function runOperatorDigest(): Promise<JobResult> {
+  const now = new Date();
+  const detail: Record<string, unknown> = {};
+  try {
+    const { sendWeeklyOperatorDigest, sendOperatorDigest } = await import("@/modules/platform/digests");
+    if (now.getUTCDay() === 1) {
+      detail.weekly = await sendWeeklyOperatorDigest();
+    }
+    if (now.getUTCDate() === 1) {
+      detail.monthly = await sendOperatorDigest(now);
+    }
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+  return { ok: true, detail: { ...detail, skipped: Object.keys(detail).length === 0 } };
 }
 
 async function runMailboxPoll(): Promise<JobResult> {

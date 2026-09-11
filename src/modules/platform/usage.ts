@@ -198,7 +198,7 @@ export async function rollupUsageDay(orgId: string, day: Date): Promise<void> {
 }
 
 /** Job entry: roll up yesterday (final) + today (provisional) for every active org. */
-export async function rollupRecentUsage(): Promise<{ orgs: number; days: number }> {
+export async function rollupRecentUsage(): Promise<{ orgs: number; days: number; pruned: number }> {
   const orgs = await db
     .select({ id: organizations.id })
     .from(organizations)
@@ -210,7 +210,11 @@ export async function rollupRecentUsage(): Promise<{ orgs: number; days: number 
     await rollupUsageDay(org.id, yesterday);
     await rollupUsageDay(org.id, today);
   }
-  return { orgs: orgs.length, days: 2 };
+  // 3-year retention prune (§3.1 + amendment #8) — keeps the rollup bounded.
+  const pruned = await db.execute(sql`
+    DELETE FROM platform.tenant_usage_daily WHERE day < (current_date - interval '3 years')
+  `);
+  return { orgs: orgs.length, days: 2, pruned: pruned.rowCount ?? 0 };
 }
 
 // ---------- console reads ----------
@@ -221,6 +225,10 @@ export interface UsageRow {
   slug: string;
   plan: string;
   seatsActive: number;
+  /** Effective seat cap (null = unlimited plan). */
+  seatLimit: number | null;
+  /** seats ÷ cap, percent (null = unlimited). §4.4 "seat utilization". */
+  seatUtilizationPct: number | null;
   /** Σ distinct audit actors over the last 7 rolled-up days */
   activeActors7d: number;
   actions30d: number;
@@ -257,6 +265,8 @@ export async function usageSummary(ctx: AuthContext): Promise<UsageRow[]> {
            o.slug,
            o.plan,
            u.seats_active AS "seatsActive",
+           (CASE o.seat_limit IS NOT NULL WHEN true THEN o.seat_limit
+             ELSE (CASE o.plan WHEN 'growth' THEN 50 WHEN 'scale' THEN NULL ELSE 10 END) END) AS "seatLimit",
            COALESCE(actors7.a7, 0) AS "activeActors7d",
            COALESCE(last30.actions30, 0) AS "actions30d",
            COALESCE(last30.logins30, 0) AS "logins30d",
@@ -275,20 +285,27 @@ export async function usageSummary(ctx: AuthContext): Promise<UsageRow[]> {
     ORDER BY COALESCE(last30.actions30, 0) DESC
     LIMIT 500
   `);
-  return (res.rows as Record<string, unknown>[]).map((r) => ({
-    organizationId: String(r.organizationId),
-    name: String(r.name),
-    slug: String(r.slug),
-    plan: String(r.plan),
-    seatsActive: Number(r.seatsActive ?? 0),
-    activeActors7d: Number(r.activeActors7d ?? 0),
-    actions30d: Number(r.actions30d ?? 0),
-    logins30d: Number(r.logins30d ?? 0),
-    mutations30d: Number(r.mutations30d ?? 0),
-    storageBytes: Number(r.storageBytes ?? 0),
-    documentsStored: Number(r.documentsStored ?? 0),
-    lastActiveDay: (r.lastActiveDay as string | null) ?? null,
-  }));
+  return (res.rows as Record<string, unknown>[]).map((r) => {
+    const seatsActive = Number(r.seatsActive ?? 0);
+    const seatLimit = r.seatLimit === null || r.seatLimit === undefined ? null : Number(r.seatLimit);
+    return {
+      organizationId: String(r.organizationId),
+      name: String(r.name),
+      slug: String(r.slug),
+      plan: String(r.plan),
+      seatsActive,
+      seatLimit,
+      /** §4.4 utilization: seats ÷ cap (null = unlimited plan). */
+      seatUtilizationPct: seatLimit && seatLimit > 0 ? Math.round((seatsActive / seatLimit) * 100) : null,
+      activeActors7d: Number(r.activeActors7d ?? 0),
+      actions30d: Number(r.actions30d ?? 0),
+      logins30d: Number(r.logins30d ?? 0),
+      mutations30d: Number(r.mutations30d ?? 0),
+      storageBytes: Number(r.storageBytes ?? 0),
+      documentsStored: Number(r.documentsStored ?? 0),
+      lastActiveDay: (r.lastActiveDay as string | null) ?? null,
+    };
+  });
 }
 
 /** Module-adoption heatmap: distinct audit actors per org × area over N days. */

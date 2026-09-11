@@ -101,7 +101,13 @@ export async function tenantRiskBoard(ctx: AuthContext): Promise<TenantRisk[]> {
 
   const now = Date.now();
   return (rows.rows as Record<string, unknown>[]).map((r) => {
-    const lastActiveAt = (r.lastActiveAt as Date | null) ?? null;
+    const rawLastActiveAt = r.lastActiveAt;
+    const lastActiveAt =
+      rawLastActiveAt instanceof Date
+        ? rawLastActiveAt
+        : rawLastActiveAt
+          ? new Date(rawLastActiveAt as string)
+          : null;
     const dormantHours = lastActiveAt
       ? Math.floor((now - lastActiveAt.getTime()) / 3_600_000)
       : null;
@@ -490,6 +496,9 @@ export async function broadcastAnnouncement(
       title: `📣 ${title}`,
       body,
     });
+    // Phase C — broadcast comms auto-log as a system touchpoint (CRM-lite).
+    const { logBroadcastTouchpoint } = await import("./crm");
+    await logBroadcastTouchpoint(org.id, title);
     const members = await db
       .select({ userId: organizationMemberships.userId })
       .from(organizationMemberships)

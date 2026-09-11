@@ -250,6 +250,22 @@ export async function loadAuthContext(token: string): Promise<AuthContext> {
     org.logoUrl = null;
   }
 
+  // Phase F — module kill-switches from platform.org_entitlements (60 s cache
+  // contract §8): platform 'off' always wins over the tenant's own module
+  // settings. Lazy import keeps the session leaf free of panel cycles; the
+  // read is a cache hit in steady state (zero added queries). Fail-open: a
+  // panel outage never blocks tenant access.
+  try {
+    const { entitlementValue } = await import("@/modules/platform/entitlements");
+    const modules = { ...(org.modules ?? {}) };
+    for (const m of Object.keys(modules)) {
+      if ((await entitlementValue(org.id, `module.${m}`)) === "off") modules[m] = false;
+    }
+    org.modules = modules;
+  } catch {
+    /* panel down ≠ tenant down */
+  }
+
   return {
     user: row.user,
     org,

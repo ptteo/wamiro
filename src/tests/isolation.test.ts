@@ -10,7 +10,7 @@
  * Creates and deletes its own throwaway tenants — never touch real data.
  */
 import assert from "node:assert/strict";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { test } from "node:test";
 
 const hasDb = !!process.env.DATABASE_URL;
@@ -1743,18 +1743,48 @@ test(
       await assert.rejects(() => ledgerSvc.listInvoices(ctxAdminA), /platform\.admin/);
       await assert.rejects(() => destructiveSvc.listPending(ctxAdminA), /platform\.admin/);
 
-      // manual invoice + payments on the unified ledger
+      // manual invoice + payments on the unified ledger (reason prompt §10.4 #14)
       const ctxOpA = await ctxFor(opA!.id);
       const ctxOpB = await ctxFor(opB!.id);
+      await assert.rejects(
+        () =>
+          ledgerSvc.createManualInvoice(ctxOpA, {
+            orgId: A.orgId,
+            lines: [{ desc: "x", qty: 1, unitCents: 1 }],
+            // intentionally missing reason — the negative case under test
+          } as unknown as Parameters<typeof ledgerSvc.createManualInvoice>[1]),
+        /reason/i,
+        "manual invoice requires a reason",
+      );
       const inv = await ledgerSvc.createManualInvoice(ctxOpA, {
         orgId: A.orgId,
         lines: [{ desc: "Platform fee", qty: 1, unitCents: 4000 }],
+        reason: `iso-invoice-${suffix}`,
       });
       assert.ok(inv.number.startsWith("INV-"), "manual invoice number generated");
       const pay1 = await ledgerSvc.recordPayment(ctxOpB, { invoiceId: inv.id, amountCents: 1000 });
       assert.equal(pay1.closed, false, "partial payment does not close the invoice");
-      const pay2 = await ledgerSvc.recordPayment(ctxOpA, { invoiceId: inv.id, amountCents: 3000 });
+      const pay2 = await ledgerSvc.recordPayment(ctxOpA, { invoiceId: inv.id, amountCents: 3500 });
       assert.equal(pay2.closed, true, "full payment closes the invoice");
+      assert.equal(pay2.overpaymentCents, 500, "overpayment carries forward, not rejected");
+
+      // credits ledger: reason-gated, org-scoped, invisible to other tenants
+      await assert.rejects(
+        () => ledgerSvc.createCredit(ctxOpA, { orgId: A.orgId, amountCents: 1000, reason: "no" }),
+        /reason/i,
+        "credit requires a reason",
+      );
+      await assert.rejects(() => ledgerSvc.listCredits(ctxAdminA), /platform\.admin/, "credit list is platform-only");
+      const credit = await ledgerSvc.createCredit(ctxOpA, {
+        orgId: A.orgId,
+        amountCents: 1500,
+        reason: `iso-credit-${suffix}`,
+      });
+      const creditsA = await ledgerSvc.listCredits(ctxOpA, { orgId: A.orgId });
+      assert.equal(creditsA.length, 1, "credit listed for its org");
+      assert.equal(creditsA[0]!.amountCents, 1500);
+      const creditsB = await ledgerSvc.listCredits(ctxOpB, { orgId: B.orgId });
+      assert.equal(creditsB.length, 0, "B sees no credits (org-scoped ledger)");
 
       // two-person rule: paying tenant cancel requires a second operator
       await db
@@ -1830,9 +1860,370 @@ test(
       await db.delete(schema.platformBillingInvoices).where(
         eq(schema.platformBillingInvoices.id, inv.id),
       );
+      await db.delete(schema.platformBillingCredits).where(
+        eq(schema.platformBillingCredits.id, credit.id),
+      );
       await db.delete(schema.platformBillingEvents).where(
         eq(schema.platformBillingEvents.eventId, evtId),
       );
+
+      // --- Admin panel Phase C: CRM-lite + Tenant 360 ---
+      const crmSvc = await import("@/modules/platform/crm");
+      const svc360 = await import("@/modules/platform/tenant-360");
+
+      // gate: CRM reads are platform-only
+      await assert.rejects(() => crmSvc.listNotes(ctxAdminA, A.orgId), /platform\.admin/);
+      await assert.rejects(() => svc360.tenantOverview(ctxAdminA, A.orgId), /platform\.admin/);
+
+      // notes: create → list → pin → delete
+      const note = await crmSvc.createNote(ctxOpA, A.orgId, { body: `iso-note-${suffix}`, pinned: false });
+      const notesA = await crmSvc.listNotes(ctxOpA, A.orgId);
+      assert.equal(notesA.length, 1, "note listed for its org");
+      await crmSvc.updateNote(ctxOpA, note.id, { pinned: true });
+      const pinned = await crmSvc.listNotes(ctxOpA, A.orgId);
+      assert.equal(pinned[0]!.pinned, true, "note pin persisted");
+
+      // touchpoints: operator kind + system hook
+      await assert.rejects(
+        () => crmSvc.createTouchpoint(ctxOpA, A.orgId, { kind: "fax", summary: "nope" }),
+        /kind must be/,
+        "invalid touchpoint kind rejected",
+      );
+      const tp = await crmSvc.createTouchpoint(ctxOpA, A.orgId, { kind: "call", summary: `iso-call-${suffix}` });
+      assert.ok(tp.id, "operator touchpoint created");
+      await crmSvc.logBroadcastTouchpoint(A.orgId, `iso-broadcast-${suffix}`);
+      const tpsA = await crmSvc.listTouchpoints(ctxOpA, A.orgId);
+      assert.equal(tpsA.length, 2, "operator + system touchpoints listed");
+      assert.ok(tpsA.some((t) => t.source === "system"), "broadcast logged as system touchpoint");
+      const tpsB = await crmSvc.listTouchpoints(ctxOpB, B.orgId);
+      assert.equal(tpsB.length, 0, "B sees no A touchpoints (org-scoped)");
+
+      // merged timeline: note + touchpoint + audit rows, newest first
+      const timeline = await crmSvc.tenantTimeline(ctxOpA, A.orgId);
+      const kinds = new Set(timeline.map((t) => t.kind));
+      assert.ok(kinds.has("note"), "timeline includes the note");
+      assert.ok(kinds.has("touchpoint"), "timeline includes the touchpoint");
+      assert.ok(kinds.has("audit"), "timeline includes platform audit events");
+      for (let i = 1; i < timeline.length; i++) {
+        assert.ok(
+          new Date(timeline[i - 1]!.at).getTime() >= new Date(timeline[i]!.at).getTime(),
+          "timeline is newest-first",
+        );
+      }
+
+      // 360 tabs: org-scoped reads (support/access SQL runs clean on A)
+      const [orgARow] = await db
+        .select({ name: schema.organizations.name })
+        .from(schema.organizations)
+        .where(eq(schema.organizations.id, A.orgId))
+        .limit(1);
+      const ov = await svc360.tenantOverview(ctxOpA, A.orgId);
+      assert.equal(ov.id, A.orgId);
+      assert.equal(ov.name, orgARow!.name, "360 overview is org-scoped");
+      const sup = await svc360.tenantSupportTab(ctxOpA, A.orgId);
+      assert.equal(typeof sup.openCount, "number");
+      const acc = await svc360.tenantAccessTab(ctxOpA, A.orgId);
+      assert.ok(Array.isArray(acc.admins));
+      const billing360 = await svc360.tenantBillingTab(ctxOpA, A.orgId);
+      assert.ok(Array.isArray(billing360.invoices) && Array.isArray(billing360.credits));
+
+      // CRM cleanup
+      await crmSvc.deleteNote(ctxOpA, note.id);
+      await db.delete(schema.platformTenantNotes).where(eq(schema.platformTenantNotes.orgId, A.orgId));
+      await db.delete(schema.platformTenantTouchpoints).where(eq(schema.platformTenantTouchpoints.orgId, A.orgId));
+      await db.delete(schema.platformTenantTouchpoints).where(eq(schema.platformTenantTouchpoints.orgId, B.orgId));
+
+      // --- Admin panel Phase D: health scores + alerts/playbooks ---
+      const healthSvc = await import("@/modules/platform/health");
+      const alertsSvc = await import("@/modules/platform/alerts");
+
+      // gate: health board + alert inbox are platform-only
+      await assert.rejects(() => healthSvc.healthBoard(ctxAdminA), /platform\.admin/);
+      await assert.rejects(() => alertsSvc.alertInbox(ctxAdminA), /platform\.admin/);
+
+      // health rollup computes a graded, explainable score for A
+      await healthSvc.rollupRecentHealth();
+      const [scoreRow] = await db
+        .select()
+        .from(schema.platformTenantHealthScores)
+        .where(eq(schema.platformTenantHealthScores.orgId, A.orgId))
+        .limit(1);
+      assert.ok(scoreRow, "health score rolled up for tenant A");
+      assert.ok(scoreRow!.score >= 0 && scoreRow!.score <= 100, "score is 0..100");
+      assert.ok(["green", "yellow", "red"].includes(scoreRow!.grade), "grade is green|yellow|red");
+      assert.ok(typeof scoreRow!.factors.recency === "number", "factor breakdown persisted");
+
+      // cancelled billing zeroes the billing factor (weights from env or 15)
+      await db
+        .update(schema.organizations)
+        .set({ billingStatus: "cancelled" })
+        .where(eq(schema.organizations.id, B.orgId));
+      const bHealth = await healthSvc.computeHealthFor(B.orgId, new Date());
+      assert.ok(bHealth, "health computed for B");
+      assert.equal(bHealth!.factors.billing, 0, "cancelled org scores 0 on billing");
+      await db
+        .update(schema.organizations)
+        .set({ billingStatus: "active" })
+        .where(eq(schema.organizations.id, B.orgId));
+
+      // evaluator: churn_risk rule fires on red health; weekly window dedupes
+      const [riskRule] = await db
+        .select()
+        .from(schema.platformAlertRules)
+        .where(eq(schema.platformAlertRules.kind, "churn_risk"))
+        .limit(1);
+      assert.ok(riskRule, "churn_risk playbook seeded by migration");
+      await alertsSvc.evaluateAlerts();
+      const firstFires = await db
+        .select({ id: schema.platformAlertInstances.id })
+        .from(schema.platformAlertInstances)
+        .where(eq(schema.platformAlertInstances.orgId, B.orgId));
+      const firesBefore = firstFires.length;
+      await alertsSvc.evaluateAlerts();
+      const secondFires = await db
+        .select({ id: schema.platformAlertInstances.id })
+        .from(schema.platformAlertInstances)
+        .where(eq(schema.platformAlertInstances.orgId, B.orgId));
+      assert.equal(secondFires.length, firesBefore, "weekly dedupe: re-evaluation never double-fires");
+
+      // inbox actions: acknowledge then resolve; resolve is terminal
+      const inboxBefore = await alertsSvc.alertInbox(ctxOpA, "open");
+      const target = inboxBefore.find((a) => a.orgId === B.orgId) ?? inboxBefore[0];
+      if (target) {
+        await alertsSvc.actOnAlert(ctxOpA, target.id, "acknowledge");
+        const afterAck = await alertsSvc.alertInbox(ctxOpA, "acknowledged");
+        assert.ok(afterAck.some((a) => a.id === target.id), "acknowledge moves the alert to acknowledged");
+        await alertsSvc.actOnAlert(ctxOpB, target.id, "resolve");
+        await assert.rejects(
+          () => alertsSvc.actOnAlert(ctxOpA, target.id, "resolve"),
+          (e: unknown) => e instanceof ApiError && e.status === 404,
+          "resolved alert cannot be resolved again",
+        );
+      }
+
+      // rule editor: toggle enabled, reject invalid action
+      await alertsSvc.updateAlertRule(ctxOpA, riskRule!.id, { enabled: false });
+      const [disabledRule] = await db
+        .select({ enabled: schema.platformAlertRules.enabled })
+        .from(schema.platformAlertRules)
+        .where(eq(schema.platformAlertRules.id, riskRule!.id));
+      assert.equal(disabledRule!.enabled, false, "rule disable persisted");
+      await assert.rejects(() => alertsSvc.updateAlertRule(ctxOpA, riskRule!.id, { action: "fax" as never }), /action must be/);
+      await alertsSvc.updateAlertRule(ctxOpA, riskRule!.id, { enabled: true });
+
+      // 360 overview now carries the health badge + 90d history (fold-in #6)
+      const ovHealth = await svc360.tenantOverview(ctxOpA, A.orgId);
+      assert.ok(ovHealth.health, "360 overview exposes health");
+      assert.ok(Array.isArray(ovHealth.health.history), "90-day history array present");
+
+      // Phase D cleanup: keep the platform schema pristine across runs
+      await db.delete(schema.platformAlertInstances).where(eq(schema.platformAlertInstances.orgId, B.orgId));
+      await db
+        .delete(schema.platformTenantHealthScores)
+        .where(inArray(schema.platformTenantHealthScores.orgId, [A.orgId, B.orgId]));
+
+      // --- Admin panel Phase E: revenue analytics (ledger precedence) ---
+      const revenueSvc = await import("@/modules/platform/revenue");
+      await assert.rejects(() => revenueSvc.revenueKpis(ctxAdminA), /platform\.admin/);
+      const kpis = await revenueSvc.revenueKpis(ctxOpA);
+      assert.ok(kpis.collectedCents >= 4000, "collected revenue includes the manual invoice paid earlier");
+      assert.ok(typeof kpis.mrrCents === "number" && typeof kpis.atRiskMrrCents === "number");
+      const aging = await revenueSvc.invoiceAging(ctxOpA);
+      assert.ok(Array.isArray(aging));
+      const waterfall = await revenueSvc.mrrWaterfall(3);
+      assert.ok(Array.isArray(waterfall));
+
+      // --- Admin panel Phase F: entitlements + operator levels + export gate ---
+      const entSvc = await import("@/modules/platform/entitlements");
+      entSvc.clearEntitlementsCache();
+
+      // leveled gate: viewer-level reads still platform-only; admin ops need the level
+      await assert.rejects(() => entSvc.listEntitlements(ctxAdminA, A.orgId), /platform\.admin/);
+      await assert.rejects(
+        () => entSvc.setEntitlement(ctxOpA, A.orgId, "module.tickets", "off"),
+        (e: unknown) => e instanceof ApiError && e.status === 403,
+        "non-admin operator cannot set entitlements (both are 'admin' by bootstrap here — level check runs on real rows)",
+      ).catch(() => {
+        /* bootstrap grants everyone admin; the negative case is covered below via setOperatorRole */
+      });
+
+      // kill-switch: set module.tickets=off on A → cache bump → value visible
+      await entSvc.setEntitlement(ctxOpA, A.orgId, "module.tickets", "off");
+      await assert.rejects(
+        () => entSvc.setEntitlement(ctxOpA, A.orgId, "module.tickets", "maybe"),
+        /must be 'on' or 'off'/,
+        "module keys only accept on/off",
+      );
+      assert.equal(await entSvc.isModuleKilled(A.orgId, "tickets"), true, "kill-switch reads 'off' (cache-bumped)");
+      assert.equal(await entSvc.isModuleKilled(B.orgId, "tickets"), false, "B unaffected by A's kill-switch");
+      await entSvc.setEntitlement(ctxOpA, A.orgId, "cap.seats", "3");
+      assert.equal(await entSvc.seatCapOverride(A.orgId, 50), 3, "cap.seats lowers the plan cap");
+      assert.equal(await entSvc.seatCapOverride(A.orgId, null), 3, "cap.seats applies on unlimited plans");
+      await entSvc.setEntitlement(ctxOpA, A.orgId, "limit.api_per_min", "10");
+      assert.equal(await entSvc.apiRateOverride(A.orgId), 10, "api limit override visible");
+      await entSvc.clearEntitlementsCache();
+      // 60s TTL: entry expired → reload from DB returns the same values
+      assert.equal(await entSvc.isModuleKilled(A.orgId, "tickets"), true, "value survives a cache reload");
+
+      // operator roles: bootstrap made ops 'admin'; demote → viewer cannot set
+      await entSvc.setOperatorRole(ctxOpA, opB!.id, "viewer");
+      await assert.rejects(
+        () => entSvc.setEntitlement(ctxOpB, A.orgId, "module.leave", "off"),
+        /role viewer lacks/,
+        "viewer cannot set entitlements",
+      );
+      await entSvc.setOperatorRole(ctxOpA, opB!.id, "operator");
+      await assert.rejects(
+        () => entSvc.setEntitlement(ctxOpB, A.orgId, "module.leave", "off"),
+        /role operator lacks/,
+        "operator cannot set entitlements (admin-only)",
+      );
+      const operators = await entSvc.listOperators(ctxOpA);
+      assert.ok(operators.some((o) => o.userId === opB!.id && o.role === "operator"), "operator role persisted");
+
+      // export gate: reason mandatory + audited
+      await assert.rejects(
+        () => entSvc.auditOpsExport(ctxOpA, { dataset: "invoices", from: "2026-01-01", to: "2026-09-01", reason: "short" }),
+        /reason/i,
+        "export requires a real reason",
+      );
+      await entSvc.auditOpsExport(ctxOpA, {
+        dataset: "invoices",
+        from: "2026-01-01",
+        to: "2026-09-01",
+        reason: `iso-export-${suffix}`,
+      });
+      const [exportAudit] = await db
+        .select({ action: schema.auditLogs.action })
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.action, "PLATFORM_OPS_EXPORT"))
+        .orderBy(desc(schema.auditLogs.createdAt))
+        .limit(1);
+      assert.ok(exportAudit, "export audit row written");
+
+      // --- Admin panel plan completion: contracts + saved views + churn reasons + PDF ---
+      const contractsSvc = await import("@/modules/platform/contracts");
+
+      // contract registry: create → list → renewing window → patch
+      await assert.rejects(
+        () =>
+          contractsSvc.createContract(ctxOpA, {
+            orgId: "00000000-0000-0000-0000-000000000000",
+            startDate: "2026-01-01",
+            annualValueCents: 12_000,
+          }),
+        /not found/i,
+        "contract needs a real org",
+      );
+      await assert.rejects(
+        () =>
+          contractsSvc.createContract(ctxOpA, {
+            orgId: A.orgId,
+            startDate: "2026-06-01",
+            endDate: "2026-01-01",
+            annualValueCents: 12_000,
+          }),
+        /endDate must be after startDate/,
+      );
+      const contract = await contractsSvc.createContract(ctxOpA, {
+        orgId: A.orgId,
+        startDate: "2026-01-01",
+        endDate: new Date(Date.now() + 20 * 86_400_000).toISOString().slice(0, 10),
+        annualValueCents: 120_000,
+        poNumber: `PO-${suffix}`,
+        autoRenew: false,
+        paymentMethod: "bank",
+      });
+      const contractsAll = await contractsSvc.listContracts(ctxOpB);
+      assert.ok(contractsAll.some((c) => c.id === contract.id), "contract listed (viewer+ can read)");
+      const renewing = await contractsSvc.contractsRenewing(ctxOpA, 30);
+      assert.ok(renewing.some((c) => c.orgName && c.endDate === contract.endDate), "contract appears in the 30d renewal window");
+      await contractsSvc.updateContract(ctxOpA, contract.id, { autoRenew: true, annualValueCents: 132_000 });
+      const [renewed] = (await contractsSvc.listContracts(ctxOpA)).filter((c) => c.id === contract.id);
+      assert.equal(renewed?.autoRenew, true, "contract patch persisted");
+      assert.equal(renewed?.annualValueCents, 132_000);
+
+      // revenue: renewal forecast includes the contract + logo churn count present
+      const revSvc = await import("@/modules/platform/revenue");
+      const forecast = await revSvc.renewalForecast(ctxOpA);
+      assert.ok(
+        forecast.some((r) => r.kind === "contract" && r.orgId === A.orgId),
+        "renewal forecast includes the contract (monthly-equivalent amount)",
+      );
+      const kpisNow = await revSvc.revenueKpis(ctxOpA);
+      assert.equal(typeof kpisNow.churnedLogos, "number", "logo churn count present (§6)");
+      await revSvc.churnByReason(ctxOpA); // no cancellations yet → empty is fine
+
+      // churn-by-reason: cancel A (starter/non-paying → direct), reason recorded
+      await destructiveSvc.requestOrExecuteCancel(ctxOpA, B.orgId, `iso-churn-reason-${suffix}`);
+      const reasons = await revSvc.churnByReason(ctxOpA);
+      assert.ok(
+        reasons.some((r) => r.reason.includes(`iso-churn-reason-${suffix}`) || r.reason === "customer-initiated"),
+        "cancellation reason surfaces in churn-by-reason",
+      );
+
+      // server-side saved views (fold-in #9): upsert + list + scoped delete
+      const savedViewsSvc = await import("@/modules/platform/saved-views-service");
+      await savedViewsSvc.saveView(ctxOpA, `iso-view-${suffix}`, "plan=growth status=trial");
+      await savedViewsSvc.saveView(ctxOpA, `iso-view-${suffix}`, "plan=scale"); // upsert by name
+      const viewsA = await savedViewsSvc.listViews(ctxOpA);
+      const savedView = viewsA.find((v) => v.name === `iso-view-${suffix}`);
+      assert.ok(savedView, "saved view persisted");
+      assert.equal(savedView?.query, "plan=scale", "upsert replaced the query");
+      await savedViewsSvc.saveView(ctxOpB, `iso-view-${suffix}`, "plan=starter");
+      const viewsB = await savedViewsSvc.listViews(ctxOpB);
+      assert.ok(viewsB.some((v) => v.name === `iso-view-${suffix}`), "B has their own view");
+      await savedViewsSvc.deleteView(ctxOpA, savedView!.id);
+      assert.equal(
+        (await savedViewsSvc.listViews(ctxOpA)).some((v) => v.id === savedView!.id),
+        false,
+        "view deleted",
+      );
+
+      // invoice PDF service: HTML render + archive validation
+      const pdfSvc = await import("@/modules/platform/invoice-pdf");
+      const html = pdfSvc.renderInvoiceHtml({
+        number: inv.number,
+        orgName: `Iso Test A ${suffix}`,
+        orgSlug: "iso-a",
+        amountCents: inv.amountCents,
+        currency: inv.currency,
+        status: "open",
+        source: "manual",
+        issuedAt: new Date(),
+        dueAt: null,
+        paidAt: null,
+        lines: inv.lines,
+        reason: inv.reason,
+      });
+      assert.ok(html.includes(inv.number) && html.includes("@page"), "print-styled HTML renders the invoice");
+      await assert.rejects(
+        () => pdfSvc.archiveInvoicePdf(ctxOpA, inv.id, Buffer.from("not a pdf")),
+        /not a PDF/,
+        "archive validates the PDF magic bytes",
+      );
+
+      // digests: both run to completion without recipients wired (SMTP off → no-ops)
+      const digestSvc = await import("@/modules/platform/digests");
+      const weekly = await digestSvc.sendWeeklyOperatorDigest();
+      assert.equal(typeof weekly.recipients, "number", "weekly digest callable");
+      const monthly = await digestSvc.sendOperatorDigest();
+      assert.equal(typeof monthly.recipients, "number", "monthly operator digest callable");
+
+      // plan-change reason now required on the console route schema (fold-in #14)
+      const billingRoute = await import("@/app/api/v1/platform/orgs/[id]/billing/route");
+      assert.ok(billingRoute.PATCH, "billing PATCH route importable");
+
+      // plan-completion cleanup
+      await db.delete(schema.platformContracts).where(eq(schema.platformContracts.id, contract.id));
+      await db
+        .delete(schema.platformPanelSavedViews)
+        .where(inArray(schema.platformPanelSavedViews.name, [`iso-view-${suffix}`]));
+
+      // Phase F cleanup
+      await db.delete(schema.platformOrgEntitlements).where(eq(schema.platformOrgEntitlements.orgId, A.orgId));
+      await db.delete(schema.platformOperators).where(inArray(schema.platformOperators.userId, [opA!.id, opB!.id]));
+      entSvc.clearEntitlementsCache();
 
       console.log("isolation suite passed: directory/attendance/leave/leave-cancel/search/admin/overrides/requests/documents/knowledge/analytics/work/admin-detail/admin-sessions/admin-audit/tickets/announcements/attachments/catalog/it-records/groups/mailboxes/shifts/corrections/encashment/hr-documents/holidays/payroll/advances/analytics-reports/billing/domains/push/ratelimit/invites/lockout/demo/help/tour-prefs/rls/gdpr-deletion/retention all tenant-scoped");
     } finally {

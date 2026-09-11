@@ -3149,6 +3149,8 @@ export const platformBillingInvoices = platform.table(
     dueAt: timestamp("due_at", { withTimezone: true }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     lines: jsonb("lines").$type<{ desc: string; qty: number; unitCents: number; totalCents: number }[]>().notNull().default([]),
+    /** §10.4 #14 — why the invoice was raised (discounts, comp months). */
+    reason: text("reason").notNull().default(""),
     pdfKey: text("pdf_key"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -3202,6 +3204,49 @@ export const platformBillingCredits = platform.table(
   (t) => [index("billing_credits_org_idx").on(t.orgId)],
 );
 
+// ============================================================================
+// Admin panel plan completion — contract registry (fold-in #3, Historical
+// class: renewal/revenue history survives tenant deletion) + panel saved
+// views (fold-in #9, server-persisted per operator).
+// ============================================================================
+
+export const platformContracts = platform.table("contracts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  /** Soft ref — NULL after tenant deletion; snapshots keep history readable. */
+  orgId: uuid("org_id"),
+  orgName: text("org_name").notNull(),
+  orgSlug: text("org_slug").notNull().default(""),
+  startDate: date("start_date").notNull(),
+  endDate: date("end_date"),
+  annualValueCents: bigint("annual_value_cents", { mode: "number" }).notNull().default(0),
+  currency: char("currency", { length: 3 }).notNull().default("USD"),
+  poNumber: text("po_number"),
+  autoRenew: boolean("auto_renew").notNull().default(true),
+  /** card | bank */
+  paymentMethod: text("payment_method").notNull().default("bank"),
+  notes: text("notes").notNull().default(""),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("contracts_org_idx").on(t.orgId),
+  index("contracts_end_idx").on(t.endDate),
+]);
+
+export const platformPanelSavedViews = platform.table(
+  "panel_saved_views",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    query: text("query").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("panel_saved_views_user_name_key").on(t.userId, t.name)],
+);
+
 export const platformDestructiveOps = platform.table(
   "destructive_ops",
   {
@@ -3225,3 +3270,136 @@ export const platformDestructiveOps = platform.table(
     index("destructive_ops_org_idx").on(t.orgId),
   ],
 );
+
+// ============================================================================
+// Admin panel (Phase C) — CRM-lite: notes + touchpoints. Operational class:
+// hard FK CASCADE, these belong to the relationship and die with the tenant.
+// ============================================================================
+
+export const platformTenantNotes = platform.table(
+  "tenant_notes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    pinned: boolean("pinned").notNull().default(false),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("tenant_notes_org_idx").on(t.orgId, t.createdAt)],
+);
+
+export const platformTenantTouchpoints = platform.table(
+  "tenant_touchpoints",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** call | email | meeting | demo */
+    kind: text("kind").notNull(),
+    summary: text("summary").notNull(),
+    /** operator = logged by a person; system = auto-logged comms (broadcasts, dunning). */
+    source: text("source").notNull().default("operator"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("tenant_touchpoints_org_idx").on(t.orgId, t.occurredAt)],
+);
+
+// ============================================================================
+// Admin panel (Phase D) — health scores (Historical class: soft org ref, trend
+// history survives tenant deletion) + alerts/playbooks (operational class).
+// ============================================================================
+
+export const platformTenantHealthScores = platform.table(
+  "tenant_health_scores",
+  {
+    orgId: uuid("org_id").notNull(),
+    orgName: text("org_name").notNull().default(""),
+    day: date("day").notNull(),
+    /** 0..100 explainable score */
+    score: integer("score").notNull(),
+    /** green | yellow | red */
+    grade: text("grade").notNull(),
+    /** {recency,adoption,breadth,support,billing} — max per weight env-tunable */
+    factors: jsonb("factors").$type<Record<string, number>>().notNull().default({}),
+  },
+  (t) => [index("tenant_health_scores_day_idx").on(t.day)],
+);
+
+export const platformAlertRules = platform.table(
+  "alert_rules",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: text("name").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    /** dormant | trial_ending | failed_payment | sla_breach | churn_risk */
+    kind: text("kind").notNull(),
+    /** e.g. {"days":14} | {"daysLeft":7} | {"grade":"red"} */
+    threshold: jsonb("threshold").$type<Record<string, unknown>>().notNull().default({}),
+    /** notify_operator | email_tenant | create_task */
+    action: text("action").notNull().default("notify_operator"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+export const platformAlertInstances = platform.table(
+  "alert_instances",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    ruleId: uuid("rule_id")
+      .notNull()
+      .references(() => platformAlertRules.id, { onDelete: "cascade" }),
+    orgId: uuid("org_id").notNull(),
+    orgName: text("org_name").notNull().default(""),
+    /** dedupe bucket (weekly, Monday UTC) — UNIQUE (rule_id, org_id, window_start) */
+    windowStart: date("window_start").notNull(),
+    firedAt: timestamp("fired_at", { withTimezone: true }).notNull().defaultNow(),
+    /** open | acknowledged | resolved */
+    state: text("state").notNull().default("open"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    resolvedBy: uuid("resolved_by").references(() => users.id, { onDelete: "set null" }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("alert_instances_dedupe_key").on(t.ruleId, t.orgId, t.windowStart),
+    index("alert_instances_state_idx").on(t.state, t.firedAt),
+    index("alert_instances_org_idx").on(t.orgId),
+  ],
+);
+
+// ============================================================================
+// Admin panel (Phase F) — entitlements (60 s cache contract) + operator roles.
+// ============================================================================
+
+export const platformOrgEntitlements = platform.table(
+  "org_entitlements",
+  {
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** 'module.tickets' | 'cap.seats' | 'flag.early_access' | 'limit.api_per_min' */
+    key: text("key").notNull(),
+    /** 'off' | 'on' | number-as-string */
+    value: text("value").notNull(),
+    updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.key] })],
+);
+
+export const platformOperators = platform.table("platform_operators", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** viewer | operator | admin */
+  role: text("role").notNull().default("viewer"),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

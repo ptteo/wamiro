@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 
-import { Badge, Card, CardHeader, EmptyState } from "./ui";
+import { downloadCsv } from "@/lib/csv-client";
+import { Badge, Card, CardHeader, EmptyState, btn } from "./ui";
 
 /**
  * Admin panel Phase A — Usage tab: fleet usage table + module-adoption heatmap.
@@ -14,6 +15,8 @@ export interface UsageRowView {
   slug: string;
   plan: string;
   seatsActive: number;
+  seatLimit: number | null;
+  seatUtilizationPct: number | null;
   activeActors7d: number;
   actions30d: number;
   logins30d: number;
@@ -56,7 +59,7 @@ function fmtBytes(n: number): string {
   return `${n} B`;
 }
 
-type SortKey = "actions30d" | "activeActors7d" | "logins30d" | "mutations30d" | "storageBytes" | "seatsActive" | "name";
+type SortKey = "actions30d" | "activeActors7d" | "logins30d" | "mutations30d" | "storageBytes" | "seatsActive" | "seatUtilizationPct" | "name";
 
 export function PlatformUsageCard({ rows, heatmap }: { rows: UsageRowView[]; heatmap: HeatmapOrg[] }) {
   const [sortKey, setSortKey] = useState<SortKey>("actions30d");
@@ -66,6 +69,11 @@ export function PlatformUsageCard({ rows, heatmap }: { rows: UsageRowView[]; hea
     const copy = [...rows];
     copy.sort((a, b) => {
       if (sortKey === "name") return desc ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
+      if (sortKey === "seatUtilizationPct") {
+        const av = a.seatUtilizationPct ?? -1;
+        const bv = b.seatUtilizationPct ?? -1;
+        return desc ? bv - av : av - bv;
+      }
       return desc ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey];
     });
     return copy.slice(0, 100);
@@ -111,6 +119,21 @@ export function PlatformUsageCard({ rows, heatmap }: { rows: UsageRowView[]; hea
         <CardHeader
           title={`Usage — last 30 days (${rows.length} tenants)`}
           subtitle="Rolled up daily by the jobs worker from audit activity, rate-limit counters and file tables. Click a column to sort."
+          action={
+            <button
+              type="button"
+              className={`${btn.secondary} ${btn.small}`}
+              onClick={() =>
+                downloadCsv(
+                  `wamiro-usage-${new Date().toISOString().slice(0, 10)}.csv`,
+                  ["tenant", "slug", "plan", "seats", "seat_cap", "utilization_pct", "active_7d", "actions_30d", "logins_30d", "api_30d", "storage_bytes", "docs", "last_activity"],
+                  rows.map((r) => [r.name, r.slug, r.plan, r.seatsActive, r.seatLimit, r.seatUtilizationPct, r.activeActors7d, r.actions30d, r.logins30d, r.mutations30d, r.storageBytes, r.documentsStored, r.lastActiveDay]),
+                )
+              }
+            >
+              Export CSV
+            </button>
+          }
         />
         {rows.length === 0 ? (
           <EmptyState
@@ -125,6 +148,7 @@ export function PlatformUsageCard({ rows, heatmap }: { rows: UsageRowView[]; hea
                   <th className="px-4 py-2 text-left">{sortBtn("name", "Tenant")}</th>
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-tertiary">Plan</th>
                   <th className="px-3 py-2 text-right">{sortBtn("seatsActive", "Seats")}</th>
+                  <th className="px-3 py-2 text-right">{sortBtn("seatUtilizationPct", "Util")}</th>
                   <th className="px-3 py-2 text-right">{sortBtn("activeActors7d", "Active 7d")}</th>
                   <th className="px-3 py-2 text-right">{sortBtn("actions30d", "Actions 30d")}</th>
                   <th className="px-3 py-2 text-right">{sortBtn("logins30d", "Logins 30d")}</th>
@@ -142,6 +166,15 @@ export function PlatformUsageCard({ rows, heatmap }: { rows: UsageRowView[]; hea
                     </td>
                     <td className="px-3 py-2"><Badge tone={r.plan === "scale" ? "brand" : r.plan === "growth" ? "green" : "neutral"}>{r.plan}</Badge></td>
                     <td className="px-3 py-2 text-right tabular-nums text-secondary">{r.seatsActive}</td>
+                    <td className="px-3 py-2 text-right tabular-nums" title={r.seatLimit === null ? "unlimited plan" : `cap ${r.seatLimit}`}>
+                      {r.seatUtilizationPct === null ? (
+                        <span className="text-tertiary">—</span>
+                      ) : (
+                        <span className={r.seatUtilizationPct >= 90 ? "font-medium text-danger" : r.seatUtilizationPct >= 75 ? "font-medium text-warning" : "text-secondary"}>
+                          {r.seatUtilizationPct}%
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums text-secondary">{r.activeActors7d}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-primary">{r.actions30d}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-secondary">{r.logins30d}</td>

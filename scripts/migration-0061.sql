@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS platform.billing_invoices (
   created_by uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+-- §10.4 #14 (folded into B-fix): read-only reason prompt on billing mutations —
+-- "why did Bruito get a comp month?" is answerable from the ledger itself.
+ALTER TABLE platform.billing_invoices ADD COLUMN IF NOT EXISTS reason text NOT NULL DEFAULT '';
+
 CREATE UNIQUE INDEX IF NOT EXISTS billing_invoices_number_key
   ON platform.billing_invoices(number);
 CREATE UNIQUE INDEX IF NOT EXISTS billing_invoices_provider_key
