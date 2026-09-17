@@ -2,9 +2,10 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 
-import { AdminSection } from "@/components/admin-ui";
+import { AdminNav, AdminSection } from "@/components/admin-ui";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
@@ -61,6 +62,13 @@ export default async function RoleDetailPage({
         <Badge tone="brand">{detail.role.key}</Badge>
         {detail.role.isSystem ? <Badge tone="neutral">System</Badge> : <Badge tone="amber">Custom</Badge>}
       </PageHeader>
+
+      <AdminNav
+        items={adminTabsFor(
+          (p) => can(ctx.access, p),
+          ctx.org.modules
+        )}
+      />
 
       <AdminSection
         title="Permissions"

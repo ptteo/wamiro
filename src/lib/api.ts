@@ -53,7 +53,15 @@ export function route(
     try {
       startedAt = Date.now();
       // CSRF hardening: state-changing requests must be same-origin.
+      // G-11: Origin is optional (non-browser clients omit it), so Origin-only
+      // checking let a same-site subdomain attacker through. Modern browsers
+      // always send Sec-Fetch-Site — when present it MUST be same-origin/
+      // same-site/none; when absent we fall back to the Origin check.
       if (req.method !== "GET" && req.method !== "HEAD") {
+        const fetchSite = req.headers.get("sec-fetch-site");
+        if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "same-site" && fetchSite !== "none") {
+          throw ApiError.forbidden("Cross-site request rejected");
+        }
         const origin = req.headers.get("origin");
         if (origin) {
           const host = req.headers.get("host");

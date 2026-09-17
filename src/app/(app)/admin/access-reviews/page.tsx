@@ -1,8 +1,10 @@
 export const dynamic = "force-dynamic";
 
 import { AccessReviewsClient } from "@/components/access-reviews-client";
+import { AdminNav } from "@/components/admin-ui";
 import { Card, EmptyState } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { listOverrides, listUsersWithRoles, listTenantRoles } from "@/modules/admin/service";
 import { can } from "@/modules/iam/engine";
@@ -55,6 +57,12 @@ export default async function AccessReviewsPage() {
       <p className="text-[11px] text-tertiary">
         Keep writes the decision to the audit log. Revoke takes effect immediately.
       </p>
+      <AdminNav
+        items={adminTabsFor(
+          (p) => can(ctx.access, p),
+          ctx.org.modules
+        )}
+      />
       <AccessReviewsClient
         overrides={liveOverrides.map((o) => ({
           id: o.id,

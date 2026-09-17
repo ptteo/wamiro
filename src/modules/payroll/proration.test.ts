@@ -2,6 +2,29 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { prorationRatio } from "./service";
+import { isWorkday } from "./workweek";
+
+test("G-17: default workweek is Mon–Fri", () => {
+  const monFri = ["1", "2", "3", "4", "5"];
+  assert.equal(isWorkday(new Date("2026-09-14T12:00:00Z"), monFri, "UTC"), true); // Monday
+  assert.equal(isWorkday(new Date("2026-09-18T12:00:00Z"), monFri, "UTC"), true); // Friday
+  assert.equal(isWorkday(new Date("2026-09-19T12:00:00Z"), monFri, "UTC"), false); // Saturday
+  assert.equal(isWorkday(new Date("2026-09-20T12:00:00Z"), monFri, "UTC"), false); // Sunday
+});
+
+test("G-17: Sun–Thu workweek (Middle East calendar)", () => {
+  const sunThu = ["7", "1", "2", "3", "4"];
+  assert.equal(isWorkday(new Date("2026-09-20T12:00:00Z"), sunThu, "UTC"), true); // Sunday
+  assert.equal(isWorkday(new Date("2026-09-18T12:00:00Z"), sunThu, "UTC"), false); // Friday
+});
+
+test("G-17: local weekday honors the org timezone, not UTC", () => {
+  // 2026-09-19T02:00Z is Saturday 02:00 UTC, but Friday 19:00 in UTC-7:
+  // a Mon–Fri org in that timezone MUST count it as a workday.
+  const satUtc = new Date("2026-09-19T02:00:00Z");
+  assert.equal(isWorkday(satUtc, ["1", "2", "3", "4", "5"], "UTC"), false);
+  assert.equal(isWorkday(satUtc, ["1", "2", "3", "4", "5"], "Etc/GMT+7"), true);
+});
 
 test("no attendance and no leave → full month (clock-in not in use)", () => {
   assert.equal(prorationRatio({ expectedDays: 22, creditedDays: 0, hasAttendanceOrLeave: false }), 1);

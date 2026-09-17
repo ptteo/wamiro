@@ -442,7 +442,7 @@ test(
       });
       const ticketsB = await ticketsSvc.listTickets(ctxAdminB);
       assert.ok(
-        !ticketsB.some((t) => t.title.includes(suffix)),
+        !ticketsB.tickets.some((t) => t.title.includes(suffix)),
         "B ticket list must not contain A tickets",
       );
 
@@ -1559,8 +1559,8 @@ test(
       });
       const helpTicketsA = await ticketSvc.listTickets(ctxAdminA);
       const helpTicketsB = await ticketSvc.listTickets(ctxAdminB);
-      assert.equal(helpTicketsA.some((t) => t.id === helpTicket.id), true);
-      assert.equal(helpTicketsB.some((t) => t.id === helpTicket.id), false, "B cannot see A's help ticket");
+      assert.equal(helpTicketsA.tickets.some((t) => t.id === helpTicket.id), true);
+      assert.equal(helpTicketsB.tickets.some((t) => t.id === helpTicket.id), false, "B cannot see A's help ticket");
       const [helpRow] = await db
         .select({ category: schema.tickets.category, org: schema.tickets.organizationId })
         .from(schema.tickets)

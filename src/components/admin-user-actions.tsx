@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfirmDialog } from "./ui-overlays";
 import { btn } from "./ui";
 
 type Status = "active" | "suspended" | string;
@@ -18,43 +19,65 @@ export function UserStatusButton({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  // G-24 — native confirm/alert replaced with the design-system dialog.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const next: Status = currentStatus === "suspended" ? "active" : "suspended";
   const classes =
     className ?? (next === "suspended" ? `${btn.danger} w-full sm:w-auto` : `${btn.primary} w-full sm:w-auto`);
+
+  async function changeStatus() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/admin/users/${userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: next }),
+      });
+      if (!res.ok) {
+        const d = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+        setError(d?.error?.message ?? "Could not change user status");
+        return;
+      }
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <button
-      type="button"
-      className={classes}
-      disabled={busy}
-      onClick={async () => {
-        if (next === "suspended") {
-          const ok = window.confirm(
-            "Suspend this user? All their active sessions will be revoked. They will not be able to sign in until reactivated.",
-          );
-          if (!ok) return;
-        }
-        setBusy(true);
-        try {
-          const res = await fetch(`/api/v1/admin/users/${userId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: next }),
-          });
-          if (!res.ok) {
-            const d = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-            window.alert(d?.error?.message ?? "Could not change user status");
+    <>
+      {error ? (
+        <p role="alert" className="mt-2 rounded-md bg-danger-subtle px-3 py-2 text-xs text-danger">
+          {error}
+        </p>
+      ) : null}
+      <button
+        type="button"
+        className={classes}
+        disabled={busy}
+        onClick={() => {
+          if (next === "suspended") {
+            setConfirmOpen(true);
             return;
           }
-          router.refresh();
-        } catch (e) {
-          window.alert(e instanceof Error ? e.message : "Network error");
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      {next === "suspended" ? "Suspend" : "Reactivate"}
-    </button>
+          void changeStatus();
+        }}
+      >
+        {next === "suspended" ? "Suspend" : "Reactivate"}
+      </button>
+      <ConfirmDialog
+        isOpen={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Suspend user"
+        body="All their active sessions will be revoked. They will not be able to sign in until reactivated."
+        confirmLabel="Suspend"
+        onConfirm={() => void changeStatus()}
+      />
+    </>
   );
 }
 
@@ -75,41 +98,62 @@ export function SessionRevokeButton({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const label = children ?? (all ? "Revoke all sessions" : "Revoke");
+
+  async function revoke() {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = all ? { all: true } : { sessionId };
+      const res = await fetch(`/api/v1/admin/users/${userId}/sessions/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const d = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+        setError(d?.error?.message ?? "Could not revoke session(s)");
+        return;
+      }
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <button
-      type="button"
-      className={className}
-      disabled={busy}
-      onClick={async () => {
-        if (needsConfirm) {
-          const ok = window.confirm(
-            "Revoke every active session for this user? They will need to sign in again everywhere.",
-          );
-          if (!ok) return;
-        }
-        setBusy(true);
-        try {
-          const body = all ? { all: true } : { sessionId };
-          const res = await fetch(`/api/v1/admin/users/${userId}/sessions/revoke`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          if (!res.ok) {
-            const d = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-            window.alert(d?.error?.message ?? "Could not revoke session(s)");
+    <>
+      {error ? (
+        <p role="alert" className="mt-2 rounded-md bg-danger-subtle px-3 py-2 text-xs text-danger">
+          {error}
+        </p>
+      ) : null}
+      <button
+        type="button"
+        className={className}
+        disabled={busy}
+        onClick={() => {
+          if (needsConfirm) {
+            setConfirmOpen(true);
             return;
           }
-          router.refresh();
-        } catch (e) {
-          window.alert(e instanceof Error ? e.message : "Network error");
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      {label}
-    </button>
+          void revoke();
+        }}
+      >
+        {label}
+      </button>
+      <ConfirmDialog
+        isOpen={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Revoke all sessions"
+        body="The user will need to sign in again everywhere."
+        confirmLabel="Revoke all"
+        onConfirm={() => void revoke()}
+      />
+    </>
   );
 }

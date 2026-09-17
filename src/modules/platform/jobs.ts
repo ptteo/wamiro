@@ -36,6 +36,7 @@ import { sendWeeklyDigests } from "@/modules/notifications/service";
 import { purgeDueDeletions } from "@/modules/org/service";
 import { runRetentionSweep } from "@/modules/retention/service";
 import { sweepOrphanedObjects } from "@/modules/storage/orphans";
+import { ensureAccessReviewObligations } from "@/modules/admin/review-cadence";
 
 export type JobResult = { ok: boolean; detail: Record<string, unknown> };
 type Job = () => Promise<JobResult>;
@@ -66,6 +67,12 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   assets_warranty_sweep: { run: runAssetsWarrantySweep, everyMs: 24 * 60 * 60_000 },
   work_recurrence_sweep: { run: runWorkRecurrenceSweep, everyMs: 24 * 60 * 60_000 },
   announcements_publish_sweep: { run: runAnnouncementsPublishSweep, everyMs: 5 * 60_000 },
+  // G-01 — replay audit rows that were dead-lettered during a DB outage
+  audit_dlq_replay: { run: runAuditDlqReplay, everyMs: 15 * 60_000 },
+  // G-08 — retry failed webhook deliveries with exponential backoff
+  webhook_retry_sweep: { run: runWebhookRetrySweep, everyMs: 5 * 60_000 },
+  // G-18 — quarterly access-review obligations (idempotent, cheap no-op when current)
+  access_review_cadence: { run: runAccessReviewCadence, everyMs: 60 * 60_000 },
 };
 
 /** Tenant ids the per-org sweeps iterate (platform org excluded). */
@@ -324,6 +331,35 @@ async function runAnnouncementsPublishSweep(): Promise<JobResult> {
   } catch (e) {
     return { ok: false, detail: { error: String(e).slice(0, 300) } };
   }
+}
+
+/** G-01 — drain the audit dead-letter file back into audit_logs. */
+async function runAuditDlqReplay(): Promise<JobResult> {
+  try {
+    const { replayAuditDeadLetters } = await import("@/lib/audit");
+    const r = await replayAuditDeadLetters();
+    // found === 0 is the steady state; not a failure.
+    return { ok: r.failed === 0, detail: { found: r.found, replayed: r.replayed, failed: r.failed } };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** G-08 — deliver due webhook retries (exponential backoff, 6 tries). */
+async function runWebhookRetrySweep(): Promise<JobResult> {
+  try {
+    const { sweepWebhookRetries } = await import("@/modules/webhooks/service");
+    const r = await sweepWebhookRetries();
+    return { ok: true, detail: { ...r } };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** G-18 — ensure the quarter's access-review obligation exists per tenant. */
+async function runAccessReviewCadence(): Promise<JobResult> {
+  const created = await ensureAccessReviewObligations();
+  return { ok: true, detail: { created } };
 }
 
 // ---------- scheduler ----------

@@ -78,6 +78,33 @@ export async function destroySession(token: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.tokenHash, hashToken(token)));
 }
 
+/**
+ * G-06 — soft-forge re-auth after a privilege change.
+ *
+ * `computeEffectiveAccess` re-evaluates per request, so grants/denies apply
+ * immediately — but a demoted admin's stolen/lost session would otherwise
+ * stay valid up to the full 14-day TTL. Capping every active session of the
+ * affected user at ~1h bounds that window without a hard logout (UX keeps
+ * working; nothing new can be done with stale privilege for long).
+ * Idempotent and cheap: one UPDATE, no token material changes.
+ */
+export async function bumpUserSessions(userId: string, withinMs = 60 * 60_000): Promise<void> {
+  try {
+    await db
+      .update(sessions)
+      .set({ expiresAt: new Date(Date.now() + withinMs) })
+      .where(
+        and(
+          eq(sessions.userId, userId),
+          gt(sessions.expiresAt, new Date(Date.now() + withinMs)),
+        ),
+      );
+  } catch (e) {
+    // Never let a session bump break the admin action it follows.
+    console.error(JSON.stringify({ level: "error", msg: "session_bump_failed", userId, err: String(e).slice(0, 200) }));
+  }
+}
+
 /** R2 §8: organizations this identity belongs to (for the switcher). */
 export async function listMemberships(userId: string) {
   const { organizationMemberships } = await import("@/db/schema");

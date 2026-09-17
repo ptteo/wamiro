@@ -89,14 +89,69 @@ async function persistSlaState(orgId: string, ticketId: string, state: SlaState)
 const assigneeUsers = alias(users, "assignee_users");
 
 /**
+ * Opaque keyset cursor over (createdAt, id) — mirrors the audit trail (G-03).
+ */
+export interface TicketPageCursor {
+  createdAt: Date;
+  id: string;
+}
+
+export function encodeTicketCursor(row: { createdAt: Date | string; id: string }): string {
+  return Buffer.from(JSON.stringify([new Date(row.createdAt).toISOString(), row.id]), "utf8").toString("base64url");
+}
+
+export function decodeTicketCursor(raw: string | null | undefined): TicketPageCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const [t, id] = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as [string, string];
+    const d = new Date(t);
+    if (!Number.isFinite(d.getTime()) || !id) return undefined;
+    return { createdAt: d, id };
+  } catch {
+    return undefined;
+  }
+}
+
+export interface TicketListResult {
+  tickets: Awaited<ReturnType<typeof mapTicketRows>>;
+  /** Pass as `before` to fetch the next page; null when exhausted. */
+  nextCursor: string | null;
+  /** Total matching rows for the current filters (ignores the cursor). */
+  total: number;
+}
+
+async function mapTicketRows(rows: {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  category: string;
+  requesterName: string | null;
+  assigneeName: string | null;
+  slaDueDate: Date | null;
+  firstResponseDueAt: Date | null;
+  firstResponseAt: Date | null;
+  resolvedAt: Date | null;
+  csatScore: number | null;
+  createdAt: Date;
+}[]) {
+  return rows.map((r) => ({ ...r, slaState: slaStateOf(r) }));
+}
+
+/**
  * List tickets the viewer is authorized to see:
  * agents (tickets.manage) see the whole org queue; everyone else sees only
  * tickets they requested or are assigned to.
+ *
+ * G-15: keyset pagination on (createdAt, id) with a total count — the queue
+ * UI no longer silently hides older tickets past the cap. The `sla` filter is
+ * applied in SQL for state buckets (breached = past due, unresolved), and
+ * derived states match on the page (at_risk/due_soon are ratio-derived).
  */
 export async function listTickets(
   ctx: AuthContext,
-  opts: { status?: string; sla?: SlaState } = {},
-) {
+  opts: { status?: string; sla?: SlaState; before?: TicketPageCursor; limit?: number } = {},
+): Promise<TicketListResult> {
   const isAgent = can(ctx.access, "tickets.manage");
   const visibility = isAgent
     ? eq(tickets.organizationId, ctx.user.organizationId)
@@ -109,30 +164,59 @@ export async function listTickets(
       );
   const conds: (SQL | undefined)[] = [visibility];
   if (opts.status) conds.push(eq(tickets.status, opts.status));
-  const rows = await db
-    .select({
-      id: tickets.id,
-      title: tickets.title,
-      status: tickets.status,
-      priority: tickets.priority,
-      category: tickets.category,
-      requesterName: users.name,
-      assigneeName: assigneeUsers.name,
-      slaDueDate: tickets.slaDueDate,
-      firstResponseDueAt: tickets.firstResponseDueAt,
-      firstResponseAt: tickets.firstResponseAt,
-      resolvedAt: tickets.resolvedAt,
-      csatScore: tickets.csatScore,
-      createdAt: tickets.createdAt,
-    })
-    .from(tickets)
-    .innerJoin(users, eq(users.id, tickets.requesterId))
-    .leftJoin(assigneeUsers, eq(assigneeUsers.id, tickets.assigneeId))
-    .where(and(...conds))
-    .orderBy(desc(tickets.createdAt))
-    .limit(100);
-  const mapped = rows.map((r) => ({ ...r, slaState: slaStateOf(r) }));
-  return opts.sla ? mapped.filter((r) => r.slaState === opts.sla) : mapped;
+  if (opts.sla === "breached") {
+    conds.push(sql`${tickets.status} NOT IN ('resolved', 'closed')`);
+    conds.push(sql`${tickets.slaDueDate} IS NOT NULL AND ${tickets.slaDueDate} < now()`);
+  } else if (opts.sla) {
+    conds.push(sql`${tickets.status} NOT IN ('resolved', 'closed')`);
+  }
+  if (opts.before) {
+    conds.push(
+      sql`(${tickets.createdAt}, ${tickets.id}) < (${opts.before.createdAt.toISOString()}::timestamptz, ${opts.before.id}::uuid)`,
+    );
+  }
+  const limit = Math.min(Math.max(1, opts.limit ?? 50), 200);
+
+  const [rows, countRows] = await Promise.all([
+    db
+      .select({
+        id: tickets.id,
+        title: tickets.title,
+        status: tickets.status,
+        priority: tickets.priority,
+        category: tickets.category,
+        requesterName: users.name,
+        assigneeName: assigneeUsers.name,
+        slaDueDate: tickets.slaDueDate,
+        firstResponseDueAt: tickets.firstResponseDueAt,
+        firstResponseAt: tickets.firstResponseAt,
+        resolvedAt: tickets.resolvedAt,
+        csatScore: tickets.csatScore,
+        createdAt: tickets.createdAt,
+      })
+      .from(tickets)
+      .innerJoin(users, eq(users.id, tickets.requesterId))
+      .leftJoin(assigneeUsers, eq(assigneeUsers.id, tickets.assigneeId))
+      .where(and(...conds))
+      .orderBy(desc(tickets.createdAt), desc(tickets.id))
+      .limit(limit + 1),
+    db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(tickets)
+      .where(and(...conds)),
+  ]);
+
+  const hasMore = rows.length > limit;
+  if (hasMore) rows.length = limit;
+  const mapped = await mapTicketRows(rows);
+  const ticketsOut =
+    // resolved/closed rows only matter for non-bucketed states; ratio states are derived per row
+    opts.sla && opts.sla !== "breached" ? mapped.filter((r) => r.slaState === opts.sla) : mapped;
+  return {
+    tickets: ticketsOut,
+    nextCursor: hasMore && rows.length > 0 ? encodeTicketCursor(rows[rows.length - 1]!) : null,
+    total: countRows[0]?.c ?? 0,
+  };
 }
 
 export async function getTicket(ctx: AuthContext, id: string) {
@@ -531,7 +615,17 @@ export async function sweepSlaStates(ctx: AuthContext): Promise<{
  * Phase F: org-agnostic SLA sweep used by the background jobs worker.
  * Notify-once guards (sla_warning_notified_at / breach_notified_at) make it
  * idempotent, so overlapping or repeated runs are harmless.
+ *
+ * G-14 — notification batching: instead of one `notify()` per ticket (a mass
+ * breach after an outage would flood recipients AND the worker), warnings and
+ * breaches are grouped per recipient into one digest notification each, and
+ * the per-run send volume is capped (`SLA_NOTIFY_CAP_PER_RUN`). The notify-once
+ * stamps are written when the batch is built, so capped-out tickets stay
+ * idempotent and are NOT re-notified on the next tick — a second digest for
+ * the remainder only fires if a NEW ticket crosses the threshold later.
  */
+const SLA_NOTIFY_CAP_PER_RUN = Number(process.env.SLA_NOTIFY_CAP_PER_RUN ?? 50);
+
 export async function sweepOrgSlaStates(orgId: string): Promise<{
   checked: number;
   updated: number;
@@ -544,6 +638,26 @@ export async function sweepOrgSlaStates(orgId: string): Promise<{
   const PAGE = 200;
   const MAX_PAGES = 50; // 10k open tickets/org per tick; remainder waits for the next run
   let afterId: string | undefined;
+
+  // G-14 — per-recipient batches built during the scan, flushed once at the end.
+  const warnBatch = new Map<string, string[]>(); // userId → ticket titles
+  const breachBatch = new Map<string, string[]>();
+  let sendCount = 0;
+  let cappedOut = false;
+
+  const pushTo = (batch: Map<string, string[]>, userId: string | null | undefined, title: string) => {
+    if (!userId) return;
+    if (sendCount >= SLA_NOTIFY_CAP_PER_RUN) {
+      cappedOut = true;
+      return; // cap reached: skip notification, keep the state stamp
+    }
+    const list = batch.get(userId) ?? [];
+    if (list.length >= 20) return; // per-recipient digest size cap
+    list.push(title);
+    batch.set(userId, list);
+    sendCount += 1;
+  };
+
   for (let page = 0; page < MAX_PAGES; page++) {
     const open = await db
       .select()
@@ -561,46 +675,64 @@ export async function sweepOrgSlaStates(orgId: string): Promise<{
     afterId = open[open.length - 1]!.id;
     result.checked += open.length;
     for (const t of open) {
-    const state = slaStateOf(t, now);
-    if (state !== t.slaState) {
-      await persistSlaState(orgIdScope, t.id, state);
-      result.updated++;
+      const state = slaStateOf(t, now);
+      if (state !== t.slaState) {
+        await persistSlaState(orgIdScope, t.id, state);
+        result.updated++;
+      }
+      if (state === "at_risk" && !t.slaWarningNotifiedAt) {
+        await db
+          .update(tickets)
+          .set({ slaWarningNotifiedAt: now })
+          .where(and(eq(tickets.id, t.id), eq(tickets.organizationId, orgIdScope)));
+        result.warned++;
+        pushTo(warnBatch, t.assigneeId ?? t.requesterId, t.title);
+      } else if (state === "breached" && !t.breachNotifiedAt) {
+        await db
+          .update(tickets)
+          .set({ breachNotifiedAt: now })
+          .where(and(eq(tickets.id, t.id), eq(tickets.organizationId, orgIdScope)));
+        result.breached++;
+        // recipient set per ticket: assignee first, requester second (deduped)
+        for (const userId of new Set([t.assigneeId, t.requesterId].filter((id): id is string => !!id))) {
+          pushTo(breachBatch, userId, t.title);
+        }
+      }
     }
-    if (state === "at_risk" && !t.slaWarningNotifiedAt) {
-      await db
-        .update(tickets)
-        .set({ slaWarningNotifiedAt: now })
-        .where(and(eq(tickets.id, t.id), eq(tickets.organizationId, orgIdScope)));
-      result.warned++;
-      await notify({
-        organizationId: orgIdScope,
-        userId: t.assigneeId ?? t.requesterId,
-        type: "ticket",
-        title: `SLA at risk: ${t.title}`,
-        body: `Resolution is due ${t.slaDueDate?.toLocaleString() ?? "soon"}.`,
-        link: `/tickets/${t.id}`,
-      });
-    } else if (state === "breached" && !t.breachNotifiedAt) {
-      await db
-        .update(tickets)
-        .set({ breachNotifiedAt: now })
-        .where(and(eq(tickets.id, t.id), eq(tickets.organizationId, orgIdScope)));
-      result.breached++;
-      const recipients = [t.assigneeId, t.requesterId].filter(
-        (id): id is string => !!id,
-      );
-      for (const userId of new Set(recipients)) {
+  }
+
+  // G-14 — flush one digest notification per recipient per severity.
+  const flush = async (
+    batch: Map<string, string[]>,
+    kind: "at risk" | "breached",
+    bodyFor: (n: number) => string,
+    link: string,
+  ) => {
+    for (const [userId, titles] of batch) {
+      if (titles.length === 0) continue;
+      const first = titles[0]!;
+      const rest = titles.length - 1;
+      try {
         await notify({
           organizationId: orgIdScope,
           userId,
           type: "ticket",
-          title: `SLA breached: ${t.title}`,
-          body: `Resolution was due ${t.slaDueDate?.toLocaleString() ?? "unknown"} and is now overdue.`,
-          link: `/tickets/${t.id}`,
+          title:
+            titles.length === 1
+              ? `SLA ${kind}: ${first}`
+              : `${titles.length} tickets ${kind === "at risk" ? "approaching" : "past"} SLA`,
+          body: titles.length === 1 ? bodyFor(1) + first : `${bodyFor(titles.length)} ${first}${rest > 0 ? ` and ${rest} more` : ""}`,
+          link,
         });
+      } catch (e) {
+        console.error(JSON.stringify({ level: "error", msg: "sla_digest_notify_failed", orgId: orgIdScope, userId, err: String(e).slice(0, 150) }));
       }
     }
-    }
+  };
+  await flush(warnBatch, "at risk", (n) => (n === 1 ? "Resolution is due soon. " : "Resolution is due soon for"), "/tickets");
+  await flush(breachBatch, "breached", (n) => (n === 1 ? "Resolution is overdue. " : `${n} tickets are overdue, including`), "/tickets");
+  if (cappedOut) {
+    console.log(JSON.stringify({ level: "warn", msg: "sla_notify_cap_reached", orgId: orgIdScope, cap: SLA_NOTIFY_CAP_PER_RUN }));
   }
   return result;
 }

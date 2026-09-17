@@ -100,6 +100,8 @@ export const organizations = pgTable(
     primaryColor: text("primary_color").notNull().default("#4f46e5"),
     secondaryColor: text("secondary_color").notNull().default("#0f172a"),
     timezone: text("timezone").notNull().default("UTC"),
+    /** G-17 — workweek as ISO day numbers (1=Mon … 7=Sun); default Mon–Fri. */
+    workweekDays: text("workweek_days").array().notNull().default(["1", "2", "3", "4", "5"]),
     locale: text("locale").notNull().default("en"),
     currency: text("currency").notNull().default("USD"),
     dateFormat: text("date_format").notNull().default("YYYY-MM-DD"),
@@ -538,6 +540,8 @@ export const govObligations = pgTable(
     /** open | met */
     status: text("status").notNull().default("open"),
     notes: text("notes"),
+    /** G-18 — idempotency key for system-generated obligations (e.g. access reviews). */
+    sourceKey: text("source_key"),
     escalatedAt: timestamp("escalated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -650,7 +654,19 @@ export const teamMembers = pgTable(
 
 // ---------- IAM ----------
 
-/** organization_id NULL = platform role (Super Admin). */
+/**
+ * organization_id NULL = platform role (Super Admin).
+ *
+ * G-23 — uniqueness contract: `roles_org_key` is a plain (non-partial) UNIQUE
+ * index on (organization_id, key). Postgres default treats NULLs as distinct,
+ * which is exactly what we rely on: ALL platform rows with NULL org may share
+ * the same `key` across seeds/re-imports (e.g. several 'super_admin' platform
+ * rows) without colliding, while tenant rows (org NOT NULL) are strictly one
+ * role per (org, key). If platform-role key uniqueness is ever required, make
+ * the index partial (`WHERE organization_id IS NOT NULL`) and add a separate
+ * UNIQUE on key for NULL rows — do NOT switch to NULLS NOT DISTINCT, that
+ * would allow only ONE platform role in total.
+ */
 export const roles = pgTable(
   "roles",
   {
@@ -2044,6 +2060,42 @@ export const webhooks = pgTable(
       .defaultNow(),
   },
   (t) => [index("webhooks_org_idx").on(t.organizationId, t.active)],
+);
+
+/**
+ * G-08 — per-delivery ledger + retry state for outgoing webhooks.
+ * One row per (webhook, event) attempt series; pending rows are retried by
+ * the jobs worker with exponential backoff (webhook_retry_sweep). Rows are
+ * pruned by the retention sweep (31-day tail).
+ */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    webhookId: uuid("webhook_id")
+      .notNull()
+      .references(() => webhooks.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    /** The exact JSON body that was/will be signed and POSTed. */
+    payload: jsonb("payload").notNull(),
+    /** Delivery id header (idempotency key for the receiver). */
+    deliveryId: uuid("delivery_id").notNull(),
+    /** pending | delivered | failed (exhausted). */
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    lastStatus: integer("last_status"),
+    lastError: text("last_error"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("webhook_deliveries_due_idx").on(t.status, t.nextAttemptAt),
+    index("webhook_deliveries_org_idx").on(t.organizationId, t.createdAt),
+  ],
 );
 
 export const ssoConfigs = pgTable(

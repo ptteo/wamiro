@@ -20,7 +20,7 @@ export default async function TicketsPage() {
     );
   }
 
-  const [all, assignableUsers] = await Promise.all([
+  const [{ tickets: all, total: ticketTotal }, assignableUsers] = await Promise.all([
     listTickets(ctx),
     can(ctx.access, "tickets.manage") ? listAssignableUsers(ctx) : Promise.resolve([]),
   ]);
@@ -58,6 +58,7 @@ export default async function TicketsPage() {
         canCreate
         assignableUsers={assignableUsers.map((u) => ({ id: u.id, name: u.name }))}
         viewerId={ctx.user.id}
+        totalTickets={ticketTotal}
       />
     </div>
   );

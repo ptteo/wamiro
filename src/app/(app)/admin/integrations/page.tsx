@@ -1,5 +1,7 @@
 import { Content, PageHeader } from "@/components/page-header";
+import { AdminNav } from "@/components/admin-ui";
 import { Card, EmptyState } from "@/components/ui";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { listWebhooks } from "@/modules/webhooks/service";
@@ -28,6 +30,12 @@ export default async function IntegrationsPage() {
       <PageHeader
         title="Integrations"
         subtitle="Connect your systems: signed webhooks, single sign-on, and SCIM provisioning."
+      />
+      <AdminNav
+        items={adminTabsFor(
+          (p) => can(ctx.access, p),
+          ctx.org.modules
+        )}
       />
       <IntegrationsAdminClient
         webhooks={webhooks.map((w) => ({

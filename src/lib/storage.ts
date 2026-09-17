@@ -11,7 +11,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   DeleteObjectCommand,
@@ -28,6 +28,24 @@ import { env } from "./env";
 const ROOT = resolve(
   process.env.WAMIRO_DATA_DIR ?? join(process.cwd(), "data"),
 );
+
+/**
+ * G-22 — resolve a storage key to a local path and prove it stays inside
+ * ROOT. The old `target.startsWith(ROOT)` guard fails on sibling prefixes
+ * (e.g. ROOT=/data blocks nothing for /data-evil via crafted keys) and on
+ * Windows' different separator normalization. `path.relative` from ROOT to
+ * the RESOLVED target must not escape upward (start with `..`) and must not
+ * be absolute — that covers `..`, mixed separators and encoded traversal
+ * alike, on every platform.
+ */
+export function resolveLocalKey(key: string): string {
+  const target = resolve(ROOT, key);
+  const rel = relative(ROOT, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Invalid storage key");
+  }
+  return target;
+}
 
 export function documentKey(organizationId: string, fileName: string): string {
   const safe = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-80);
@@ -91,8 +109,7 @@ export async function saveObject(key: string, data: Buffer): Promise<void> {
     );
     return;
   }
-  const target = join(ROOT, key);
-  if (!target.startsWith(ROOT)) throw new Error("Invalid storage key"); // path traversal guard
+  const target = resolveLocalKey(key);
   await mkdir(join(target, ".."), { recursive: true });
   await writeFile(target, data);
 }
@@ -108,8 +125,7 @@ export async function readObject(key: string): Promise<Buffer> {
     for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk);
     return Buffer.concat(chunks);
   }
-  const target = join(ROOT, key);
-  if (!target.startsWith(ROOT)) throw new Error("Invalid storage key");
+  const target = resolveLocalKey(key);
   return readFile(target);
 }
 
@@ -121,8 +137,7 @@ export async function removeObject(key: string): Promise<void> {
     );
     return;
   }
-  const target = join(ROOT, key);
-  if (!target.startsWith(ROOT)) throw new Error("Invalid storage key");
+  const target = resolveLocalKey(key);
   await unlink(target).catch(() => {}); // already gone is fine
 }
 
@@ -138,8 +153,12 @@ export async function objectExists(key: string): Promise<boolean> {
       return false;
     }
   }
-  const target = join(ROOT, key);
-  if (!target.startsWith(ROOT)) return false;
+  let target: string;
+  try {
+    target = resolveLocalKey(key);
+  } catch {
+    return false;
+  }
   try {
     await stat(target);
     return true;
@@ -187,8 +206,12 @@ export async function listObjects(
     } while (token && out.length < limit);
     return out;
   }
-  const base = join(ROOT, prefix);
-  if (!base.startsWith(ROOT)) return [];
+  let base: string;
+  try {
+    base = resolveLocalKey(prefix.endsWith("/") ? prefix.slice(0, -1) : prefix);
+  } catch {
+    return [];
+  }
   // Windows join keeps a trailing separator — strip it so the slice below
   // doesn't eat the first character of the first child name.
   const baseKey = base.endsWith(sep) ? base.slice(0, -1) : base;
@@ -263,8 +286,12 @@ export async function removeObjectsByPrefix(prefix: string): Promise<number> {
     } while (token);
     return removed;
   }
-  const base = join(ROOT, prefix);
-  if (!base.startsWith(ROOT)) return 0;
+  let base: string;
+  try {
+    base = resolveLocalKey(prefix.endsWith("/") ? prefix.slice(0, -1) : prefix);
+  } catch {
+    return 0;
+  }
   return removeLocalTree(base);
 }
 
@@ -304,14 +331,28 @@ export interface OrgUsage {
 }
 
 /**
+ * Default object-listing cap for usage views (G-09). A 500k-object tenant
+ * would otherwise time out the admin page and hammer S3 ListObjects; above
+ * the cap the result is an honest under-count (`truncated: true`) instead of
+ * an outage.
+ */
+export const USAGE_LIST_CAP = 10_000;
+
+/**
  * Byte usage for one tenant, grouped by category (the 3rd path segment:
  * documents | hr-documents | branding | …). Listing is the source of truth —
  * it includes objects whose DB rows are gone (orphans show up as a real cost).
- * Pass `limit` to bound the listing (fleet views); totals are then an
- * under-count for orgs above the cap, which the daily orphan sweep still covers.
+ * G-09: bounded at USAGE_LIST_CAP objects by default; when the cap is hit,
+ * `truncated` is true and totals are an under-count (callers surface this).
  */
-export async function usageForOrg(orgId: string, opts: { limit?: number } = {}): Promise<OrgUsage> {
-  const objects = await listObjects(`tenant/${orgId}/`, { limit: opts.limit });
+export async function usageForOrg(
+  orgId: string,
+  opts: { limit?: number } = {},
+): Promise<OrgUsage & { truncated: boolean }> {
+  const limit = opts.limit ?? USAGE_LIST_CAP;
+  const objects = await listObjects(`tenant/${orgId}/`, { limit: limit + 1 });
+  const truncated = objects.length > limit;
+  if (truncated) objects.length = limit;
   const map = new Map<string, CategoryUsage>();
   let totalBytes = 0;
   for (const o of objects) {
@@ -326,5 +367,6 @@ export async function usageForOrg(orgId: string, opts: { limit?: number } = {}):
     totalBytes,
     totalObjects: objects.length,
     byCategory: [...map.values()].sort((a, b) => b.sizeBytes - a.sizeBytes),
+    truncated,
   };
 }

@@ -17,6 +17,8 @@ export interface OrgStorageView extends OrgUsage {
   storageBackend: "s3" | "local";
   /** True when this tenant has a pending deletion request (skipped by sweeps). */
   deletionPending: boolean;
+  /** G-09: true when the listing hit the object cap — totals are an under-count. */
+  truncated: boolean;
 }
 
 /** Tenant admin: usage per category for their own org. */
