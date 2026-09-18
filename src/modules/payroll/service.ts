@@ -461,22 +461,34 @@ async function activeStructureLines(
  * UNPAID leave is not credited (and a month of only unpaid leave is not
  * treated as "no attendance → full pay"). Holidays are excluded from the
  * expected-day denominator, so they neither help nor hurt.
+ *
+ * G-17: workdays follow the ORGANIZATION's calendar — workweek_days (ISO day
+ * numbers, default Mon–Fri, matching the old hardcoded behavior) evaluated in
+ * the org's timezone, not the server's UTC.
  */
 async function prorationFactor(orgId: string, employeeUserId: string, startIso: string, endIso: string): Promise<number> {
   const expectedRes = await db.execute(sql`
+    WITH org AS (
+      SELECT timezone, workweek_days FROM organizations WHERE id = ${orgId}
+    )
     SELECT count(*)::int AS n
     FROM generate_series(${startIso}::date, ${endIso}::date, '1 day') AS d
-    WHERE EXTRACT(ISODOW FROM d) < 6
+    WHERE EXTRACT(ISODOW FROM (d AT TIME ZONE (SELECT timezone FROM org)))::text
+            = ANY (SELECT unnest(workweek_days) FROM org)
       AND NOT EXISTS (SELECT 1 FROM holidays h WHERE h.organization_id = ${orgId} AND h.date = d::date)
   `);
   const expectedDays = Number(expectedRes.rows[0]?.n ?? 0);
   if (expectedDays <= 0) return 1;
 
   const creditRes = await db.execute(sql`
-    WITH workdays AS (
+    WITH org AS (
+      SELECT timezone, workweek_days FROM organizations WHERE id = ${orgId}
+    ),
+    workdays AS (
       SELECT d::date AS day
       FROM generate_series(${startIso}::date, ${endIso}::date, '1 day') AS d
-      WHERE EXTRACT(ISODOW FROM d) < 6
+      WHERE EXTRACT(ISODOW FROM (d AT TIME ZONE (SELECT timezone FROM org)))::text
+              = ANY (SELECT unnest(workweek_days) FROM org)
         AND NOT EXISTS (SELECT 1 FROM holidays h WHERE h.organization_id = ${orgId} AND h.date = d::date)
     ),
     leave_ranges AS (
@@ -775,7 +787,12 @@ export async function createRun(
   return row;
 }
 
-/** (Re)compute payslips for every employee with an active structure. Draft only. */
+/** (Re)compute payslips for every employee with an active structure. Draft only.
+ * G-13: the write phase takes `FOR UPDATE NOWAIT` on the run row, so two
+ * concurrent computes fail fast instead of interleaving (previously both read
+ * status=draft, then both deleted/inserted — the last writer silently won).
+ * Payload computation is read-only and parallelized in bounded chunks.
+ */
 export async function computeRun(ctx: AuthContext, runId: string): Promise<{ count: number }> {
   await ensureManage(ctx);
   const orgId = ctx.user.organizationId;
@@ -810,36 +827,81 @@ export async function computeRun(ctx: AuthContext, runId: string): Promise<{ cou
 
   const start = String(run.periodStart);
   const end = String(run.periodEnd);
-  // Pre-validate every structure *before* deleting existing slips so a
-  // mid-loop throw cannot leave a half-written run.
+  // G-13 — parallel payload computation in bounded chunks (the old per-employee
+  // serial loop was ~5 queries × N employees; chunks keep pool pressure sane).
+  // Read-only, so running it before the lock is safe — the lock re-check below
+  // is what guards the write.
   const payloads: NonNullable<Awaited<ReturnType<typeof computePayslipFor>>>[] = [];
-  for (const emp of staff) {
-    const calc = await computePayslipFor(orgId, emp.employeeUserId, start, end, emp.employeeCode, run.currency);
-    if (calc) payloads.push(calc);
+  const CHUNK = 8;
+  for (let i = 0; i < staff.length; i += CHUNK) {
+    const chunk = staff.slice(i, i + CHUNK);
+    const calcs = await Promise.all(
+      chunk.map((emp) =>
+        computePayslipFor(orgId, emp.employeeUserId, start, end, emp.employeeCode, run.currency).catch((e) => {
+          // Pre-validate every structure *before* deleting existing slips so a
+          // mid-loop throw cannot leave a half-written run.
+          throw e;
+        }),
+      ),
+    );
+    for (const calc of calcs) if (calc) payloads.push(calc);
   }
 
-  await db.transaction(async (tx) => {
-    await tx.delete(payslips).where(eq(payslips.runId, runId));
-    if (payloads.length === 0) return;
-    await tx.insert(payslips).values(
-      payloads.map((calc) => ({
-        organizationId: orgId,
-        runId,
-        employeeUserId: calc.employeeUserId,
-        employeeCode: calc.employeeCode,
-        earnings: calc.earnings,
-        deductions: calc.deductions,
-        gross: String(calc.gross),
-        totalDeductions: String(calc.totalDeductions),
-        net: String(calc.net),
-        currency: calc.currency,
-      })),
-    );
-  });
-  // Phase 8 — arrears consumed by this compute (recompute of the same draft
-  // run is safe: the stamp is idempotent per employee+run).
-  for (const calc of payloads) {
-    await markArrearsApplied(orgId, runId, calc.employeeUserId);
+  try {
+    await db.transaction(async (tx) => {
+      // G-13 — atomic claim of the run row. NOWAIT makes a concurrent compute
+      // throw immediately (clear error) instead of queueing and interleaving.
+      const claimed = await tx.execute(
+        sql`SELECT id FROM payroll_runs WHERE id = ${runId} FOR UPDATE NOWAIT`,
+      );
+      if (Number(claimed.rowCount ?? 0) !== 1) throw ApiError.conflict("Payroll run is being modified elsewhere");
+      // Re-check under the lock — the status may have changed while payloads computed.
+      const [fresh] = await tx
+        .select({ status: payrollRuns.status })
+        .from(payrollRuns)
+        .where(eq(payrollRuns.id, runId))
+        .limit(1);
+      if (!fresh || fresh.status !== "draft") throw ApiError.conflict("Only draft runs can be (re)computed");
+
+      await tx.delete(payslips).where(eq(payslips.runId, runId));
+      if (payloads.length > 0) {
+        await tx.insert(payslips).values(
+          payloads.map((calc) => ({
+            organizationId: orgId,
+            runId,
+            employeeUserId: calc.employeeUserId,
+            employeeCode: calc.employeeCode,
+            earnings: calc.earnings,
+            deductions: calc.deductions,
+            gross: String(calc.gross),
+            totalDeductions: String(calc.totalDeductions),
+            net: String(calc.net),
+            currency: calc.currency,
+          })),
+        );
+      }
+      // G-13 — arrears consumption rides the same transaction as the slips it
+      // belongs to (previously a separate commit after the slips were written).
+      for (const calc of payloads) {
+        await tx
+          .update(payrollArrears)
+          .set({ status: "applied", appliedRunId: runId })
+          .where(
+            and(
+              eq(payrollArrears.organizationId, orgId),
+              eq(payrollArrears.employeeUserId, calc.employeeUserId),
+              eq(payrollArrears.status, "pending"),
+            ),
+          );
+      }
+    });
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    const msg = String(e);
+    if (msg.includes("could not obtain lock") || msg.includes("55P03")) {
+      throw ApiError.conflict("Another compute of this run is already in progress");
+    }
+    throw e;
   }
   const count = payloads.length;
   await audit({

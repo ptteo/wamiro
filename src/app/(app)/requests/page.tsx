@@ -16,7 +16,7 @@ import {
   pendingForApprover,
 } from "@/modules/requests/service";
 import { db } from "@/lib/db";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { users, requestTypes as requestTypesTbl } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
@@ -57,7 +57,10 @@ export default async function RequestsPage() {
   const typeIds = Array.from(new Set(mine.map((r) => r.typeId)));
   const [reviewerRows, typeRows] = await Promise.all([
     reviewerIds.length > 0
-      ? db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, reviewerIds))
+      ? db
+          .select({ id: users.id, name: users.name })
+          .from(users)
+          .where(and(inArray(users.id, reviewerIds), eq(users.organizationId, ctx.user.organizationId)))
       : Promise.resolve([] as { id: string; name: string }[]),
     typeIds.length > 0
       ? db

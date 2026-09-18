@@ -6,6 +6,7 @@ import { and, asc, desc, eq, gt, lt } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { assertTimestampRangeInBounds } from "@/lib/date-bounds";
 import { ApiError } from "@/lib/errors";
 import type { AuthContext } from "@/lib/session";
 import { users, workplaceBookings, workplaceResources, workplaceVisitors } from "@/db/schema";
@@ -64,6 +65,8 @@ export async function book(
   const start = new Date(input.startsAt);
   const end = new Date(input.endsAt);
   if (!(start < end)) throw ApiError.badRequest("Booking must end after it starts");
+  // G-30 — reject dates in the far past/future and unparseable timestamps.
+  assertTimestampRangeInBounds(start, end, "booking window");
 
   const [res] = await db
     .select({ id: workplaceResources.id, name: workplaceResources.name, status: workplaceResources.status })

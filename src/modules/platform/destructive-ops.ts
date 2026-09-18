@@ -14,7 +14,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
 import { organizations, platformDestructiveOps } from "@/db/schema";
-import { requirePlatform } from "./console";
+import { requirePlatformLevel } from "./entitlements";
 import type { AuthContext } from "@/lib/session";
 
 export type DestructiveKind = "cancel_subscription" | "delete_tenant";
@@ -62,7 +62,7 @@ export async function requestOrExecuteCancel(
   orgId: string,
   reason: string,
 ): Promise<{ pending: boolean; opId?: string; message: string }> {
-  requirePlatform(ctx);
+  requirePlatformLevel(ctx, "admin"); // Phase F: destructive requests are admin-level
   await expireStale();
   const trimmed = reason.trim();
   if (trimmed.length < 5) throw ApiError.badRequest("Give a reason for the cancellation (min 5 chars)");
@@ -109,7 +109,7 @@ export async function requestOrExecuteCancel(
 }
 
 export async function listPending(ctx: AuthContext) {
-  requirePlatform(ctx);
+  requirePlatformLevel(ctx, "viewer");
   await expireStale();
   return db
     .select({
@@ -131,7 +131,7 @@ export async function listPending(ctx: AuthContext) {
 
 /** Second operator approves — the queued mutation executes under THEIR identity. */
 export async function approveDestructiveOp(ctx: AuthContext, opId: string) {
-  requirePlatform(ctx);
+  requirePlatformLevel(ctx, "operator"); // second-person approval may be a non-admin operator
   await expireStale();
   const [op] = await db
     .select()
@@ -170,7 +170,7 @@ export async function approveDestructiveOp(ctx: AuthContext, opId: string) {
 
 /** Requester or any other operator can reject a pending request. */
 export async function rejectDestructiveOp(ctx: AuthContext, opId: string) {
-  requirePlatform(ctx);
+  requirePlatformLevel(ctx, "operator");
   const [op] = await db
     .select({ id: platformDestructiveOps.id, orgName: platformDestructiveOps.orgName, requestedBy: platformDestructiveOps.requestedBy })
     .from(platformDestructiveOps)

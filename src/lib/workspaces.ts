@@ -10,6 +10,7 @@ import {
   Bot,
   Building2,
   Calendar,
+  HardDrive,
   CalendarCheck,
   CalendarDays,
   CalendarClock,
@@ -324,6 +325,18 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
       { label: "Discussions", href: "/discussions", icon: MessageSquare, module: "announcements", permissions: ["employees.view"] },
       { label: "Surveys & Polls", href: "/surveys", icon: ListChecks, permissions: ["employees.view"] },
       { label: "Acknowledgements", href: "/acknowledgements", icon: PenLine, module: "announcements", permissions: ["employees.view"] },
+      {
+        // G-19: GRC is HR-facing — the Admin workspace's permission gate
+        // (users.manage/roles.manage/audit.view) hid it from governance.view
+        // holders entirely. Company has no workspace-level gate, so the item's
+        // own governance.view permission is the only wall.
+        label: "Governance",
+        href: "/governance",
+        icon: Scale,
+        module: "governance",
+        permissions: ["governance.view"],
+        group: "Governance & Compliance",
+      },
     ],
   },
   facilities: {
@@ -393,16 +406,6 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         group: "Console",
       },
       {
-        // Phase 7 (§2.2): GRC is an admin function in BambooHR/LogicGate-class
-        // tools — moved out of Company.
-        label: "Governance",
-        href: "/governance",
-        icon: Scale,
-        module: "governance",
-        permissions: ["governance.view"],
-        group: "GRC",
-      },
-      {
         label: "Users",
         href: "/admin/users",
         icon: UserCog,
@@ -416,6 +419,14 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         icon: UserCog,
         module: "admin",
         permissions: ["roles.manage"],
+        group: "Access & Security",
+      },
+      {
+        label: "Access Reviews",
+        href: "/admin/access-reviews",
+        icon: ClipboardCheck,
+        module: "admin",
+        permissions: ["users.manage", "roles.manage", "audit.view"],
         group: "Access & Security",
       },
       {
@@ -435,12 +446,28 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         group: "Access & Security",
       },
       {
-        label: "Access Reviews",
-        href: "/admin/access-reviews",
-        icon: ClipboardCheck,
+        label: "Organization",
+        href: "/admin/organization",
+        icon: Building2,
         module: "admin",
-        permissions: ["users.manage", "roles.manage", "audit.view"],
-        group: "Access & Security",
+        permissions: ["departments.manage", "data.export", "audit.view"],
+        group: "Configuration",
+      },
+      {
+        label: "Storage",
+        href: "/admin/storage",
+        icon: HardDrive,
+        module: "admin",
+        permissions: ["users.manage", "settings.manage"],
+        group: "Configuration",
+      },
+      {
+        label: "Integrations",
+        href: "/admin/integrations",
+        icon: Plug,
+        module: "admin",
+        permissions: ["settings.manage"],
+        group: "Configuration",
       },
       {
         label: "Services",
@@ -465,14 +492,6 @@ export const WORKSPACES: Record<string, WorkspaceDef> = {
         module: "admin",
         permissions: ["tickets.manage"],
         group: "Support Settings",
-      },
-      {
-        label: "Integrations",
-        href: "/admin/integrations",
-        icon: Plug,
-        module: "admin",
-        permissions: ["settings.manage"],
-        group: "Enterprise",
       },
     ],
   },

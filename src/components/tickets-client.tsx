@@ -106,12 +106,15 @@ export function TicketsClient({
   canCreate,
   assignableUsers,
   viewerId,
+  totalTickets,
 }: {
   tickets: Ticket[];
   canManage: boolean;
   canCreate: boolean;
   assignableUsers: { id: string; name: string }[];
   viewerId?: string;
+  /** G-15: total matching rows server-side (may exceed the shown page). */
+  totalTickets?: number;
 }) {
   const router = useRouter();
   const [creating, setCreating] = useState(false);
@@ -373,7 +376,13 @@ export function TicketsClient({
       )}
 
       <Card>
-        <CardHeader title={`Tickets (${tickets.length})`} />
+        <CardHeader
+          title={
+            totalTickets !== undefined && totalTickets > tickets.length
+              ? `Tickets (${tickets.length} shown of ${totalTickets})`
+              : `Tickets (${tickets.length})`
+          }
+        />
         {tickets.length === 0 ? (
           <EmptyState
             title="No tickets yet"

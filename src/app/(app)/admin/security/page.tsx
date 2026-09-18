@@ -2,7 +2,8 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 
-import { AdminKpi, AdminKpiStrip, AdminSection } from "@/components/admin-ui";
+import { AdminKpi, AdminKpiStrip, AdminNav, AdminSection } from "@/components/admin-ui";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { Badge, Card, EmptyState, btn } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
 import { SECURITY_AUDIT_QUERY } from "@/lib/admin-security";
@@ -49,9 +50,12 @@ export default async function SecurityCenterPage() {
         title="Security center"
         subtitle="Authentication, sessions, and provider status."
       />
-      <p className="text-[11px] text-tertiary">
-        Session revocation is audited. MFA is self-service at Settings → Security.
-      </p>
+      <AdminNav
+        items={adminTabsFor(
+          (p) => can(ctx.access, p),
+          ctx.org.modules
+        )}
+      />
 
       <AdminKpiStrip columns={3}>
           <AdminKpi
@@ -96,16 +100,18 @@ export default async function SecurityCenterPage() {
         </ul>
       </AdminSection>
 
-      <AdminSection title="Password change requests" subtitle="Only used when password mode is managed.">
-        <PasswordRequestsAdmin
-          requests={passwordRequests.map((r) => ({
-            id: r.id,
-            name: r.name,
-            email: r.email,
-            createdAt: r.createdAt.toISOString(),
-          }))}
-        />
-      </AdminSection>
+      <div id="password-requests" className="scroll-mt-24">
+        <AdminSection title="Password change requests" subtitle="Only used when password mode is managed.">
+          <PasswordRequestsAdmin
+            requests={passwordRequests.map((r) => ({
+              id: r.id,
+              name: r.name,
+              email: r.email,
+              createdAt: r.createdAt.toISOString(),
+            }))}
+          />
+        </AdminSection>
+      </div>
 
       <AdminSection
         title="Sessions"

@@ -100,13 +100,28 @@ export function CommandPalette({ nav }: { nav: NavItem[] }) {
     }
   }, [open]);
 
-  // Listen for external open requests (mobile menu button etc.)
+  // Listen for external open requests (mobile menu button etc.). A second
+  // delayed echo covers clicks that land while hydration is still in flight.
   useEffect(() => {
     function onOpen() {
       setOpen(true);
     }
     window.addEventListener("wamiro:open-palette", onOpen);
-    return () => window.removeEventListener("wamiro:open-palette", onOpen);
+    window.addEventListener("wamiro:open-palette-late", onOpen);
+    return () => {
+      window.removeEventListener("wamiro:open-palette", onOpen);
+      window.removeEventListener("wamiro:open-palette-late", onOpen);
+    };
+  }, []);
+
+  // Consume a request recorded before this component mounted: the launcher
+  // sets a window flag, so an early click is never lost to listener timing.
+  useEffect(() => {
+    const w = window as typeof window & { __wamiroPaletteOpen?: boolean };
+    if (w.__wamiroPaletteOpen) {
+      w.__wamiroPaletteOpen = false;
+      setOpen(true);
+    }
   }, []);
 
   // debounce server search
@@ -293,12 +308,24 @@ export function CommandPalette({ nav }: { nav: NavItem[] }) {
   );
 }
 
-/** Tiny launcher for touch surfaces without the sidebar (mobile top bar). */
+/**
+ * Tiny launcher for touch surfaces without the sidebar (mobile top bar).
+ * Robust against listener timing: it dispatches the open event AND sets a
+ * window flag that <CommandPalette> consumes on mount, so a click that lands
+ * before the palette hydrates still opens it.
+ */
 export function PaletteOpenButton({ className }: { className?: string }) {
   const openPalette = useCallback(() => {
-    if (typeof window !== "undefined") window.dispatchEvent(new Event("wamiro:open-palette"));
+    if (typeof window !== "undefined") {
+      (window as typeof window & { __wamiroPaletteOpen?: boolean }).__wamiroPaletteOpen = true;
+      window.dispatchEvent(new Event("wamiro:open-palette"));
+      window.setTimeout(() => window.dispatchEvent(new Event("wamiro:open-palette-late")), 350);
+    }
   }, []);
-  return typeof window !== "undefined" ? (
+  // Render unconditionally: a `typeof window` branch inside render is a
+  // hydration mismatch (server span vs client button) and crashes React's
+  // commit with "cannot read properties of null (reading 'parentNode')".
+  return (
     <button
       type="button"
       aria-label="Open search"
@@ -310,7 +337,5 @@ export function PaletteOpenButton({ className }: { className?: string }) {
     >
       <Search className="h-4 w-4" strokeWidth={1.75} />
     </button>
-  ) : (
-    <span className={className ?? "inline-block h-8 w-8"} aria-hidden />
   );
 }

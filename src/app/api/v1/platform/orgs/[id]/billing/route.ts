@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { route } from "@/lib/api";
 import { ApiError } from "@/lib/errors";
+import { audit } from "@/lib/audit";
 import { setOrgPlan, startTrial } from "@/modules/billing/service";
 import { requestOrExecuteCancel } from "@/modules/platform/destructive-ops";
 
@@ -13,7 +14,9 @@ const patchSchema = z
     trialDays: z.number().int().min(1).max(365).nullable().optional(),
     seatLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
     seatOveragePolicy: z.enum(["hard", "soft"]).optional(),
-    reason: z.string().max(500).optional(),
+    // fold-in #14: plan changes require a reason — "why is Bruito on Scale?"
+    // is answerable from the audit trail.
+    reason: z.string().min(5).max(500),
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: "Provide plan, billingStatus, trialDays, seatLimit or seatOveragePolicy",
@@ -37,6 +40,14 @@ export const PATCH = route(
       return NextResponse.json(result);
     }
     await setOrgPlan(auth, id, parsed.data as Parameters<typeof setOrgPlan>[2]);
+    await audit({
+      organizationId: null,
+      actorUserId: auth.user.id,
+      action: "ORG_PLAN_CHANGED",
+      entityType: "organization",
+      entityId: id,
+      newValue: { ...parsed.data, via: "platform_console" },
+    }).catch(() => undefined);
     return NextResponse.json({ ok: true });
   },
   { permission: "platform.admin" },

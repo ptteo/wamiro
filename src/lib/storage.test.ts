@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 type StorageModule = typeof import("@/lib/storage");
@@ -78,6 +78,35 @@ test("removeObjectsByPrefix deletes an entire tenant prefix", async () => {
   assert.equal((await storage.usageForOrg(org)).totalObjects, 0);
   // removeObject on a missing key is a no-op (already-gone is fine)
   await storage.removeObject(`tenant/${org}/documents/a.pdf`);
+});
+
+test("G-22 — traversal keys that escape ROOT are rejected on every primitive", async () => {
+  // Keys whose RESOLVED path escapes ROOT must throw (or be a no-op for the
+  // soft primitives) — never touch disk outside ROOT. Keys that merely
+  // contain `..` but resolve back inside ROOT are unusual but sandboxed, so
+  // they are allowed (same semantics S3 gives odd-but-legal keys).
+  const escapes = [
+    "../outside.txt",
+    "tenant/x/documents/../../../../outside.txt",
+    "tenant/../../outside",
+    "/etc/passwd",
+  ];
+  for (const key of escapes) {
+    await assert.rejects(() => storage.saveObject(key, Buffer.from("x")), "saveObject must reject");
+    await assert.rejects(() => storage.readObject(key), "readObject must reject");
+    assert.throws(() => storage.resolveLocalKey(key), "resolveLocalKey must throw");
+    // soft primitives: rejected keys are no-ops, not crashes
+    assert.equal(await storage.objectExists(key), false);
+    assert.deepEqual(await storage.listObjects(key), []);
+    assert.equal(await storage.removeObjectsByPrefix(key), 0);
+    await assert.rejects(() => storage.removeObject(key), "removeObject must reject bad keys");
+  }
+  // a `..` key that stays INSIDE the sandbox resolves fine
+  const inside = storage.resolveLocalKey("tenant/a/../documents/x.pdf");
+  assert.ok(resolve(inside).startsWith(resolve(tempRoot)), "sandboxed key stays inside ROOT");
+  // and a normal key still round-trips
+  const ok = storage.resolveLocalKey("tenant/org-a/documents/x.pdf");
+  assert.ok(resolve(ok).startsWith(resolve(tempRoot)), "valid key stays inside ROOT");
 });
 
 test.after(async () => {

@@ -260,7 +260,7 @@ export function SkeletonRows({ rows = 4 }: { rows?: number }) {
 export { btn, input };
 
 /* ============================================================================
- * Frappe-grammar upgrades (D-ui redesign): Button, PageHeader, Table.
+ * Frappe-grammar upgrades (D-ui redesign): Button, Table.
  * Geometry: buttons h-8 (compact) / h-9; table rows 40px dense / 48 standard;
  * radius 6px controls, 10px cards; one primary action per view.
  * ==========================================================================*/
@@ -304,35 +304,6 @@ export function Button({
       ) : null}
       {children}
     </button>
-  );
-}
-
-/** §60: sticky-capable page header with title/subtitle/actions slots. */
-export function PageHeader({
-  title,
-  subtitle,
-  actions,
-  sticky,
-}: {
-  title: string;
-  subtitle?: string;
-  actions?: React.ReactNode;
-  sticky?: boolean;
-}) {
-  return (
-    <header
-      className={cx(
-        "flex flex-wrap items-end justify-between gap-3 pb-1",
-        sticky &&
-          "sticky top-0 z-[var(--z-sticky)] -mx-1 bg-[var(--background)] px-1 pt-1",
-      )}
-    >
-      <div className="min-w-0">
-        <h1 className="text-xl font-semibold tracking-tight text-primary">{title}</h1>
-        {subtitle ? <p className="mt-0.5 text-sm text-secondary">{subtitle}</p> : null}
-      </div>
-      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
-    </header>
   );
 }
 

@@ -20,15 +20,6 @@ interface Tenant {
   createdAt: string;
 }
 
-interface Stats {
-  totalTenants: number;
-  activeSeats: number;
-  byPlan: { plan: string; count: number }[];
-  trialsEndingSoon: number;
-  usersActive7d: number;
-  companiesActive7d: number;
-}
-
 const BILLING_TONE: Record<string, "green" | "brand" | "amber" | "red"> = {
   active: "green",
   trial: "brand",
@@ -48,23 +39,11 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="rounded-lg border border-border-subtle bg-surface px-4 py-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-tertiary">{label}</p>
-      <p className="mt-1 text-2xl font-semibold text-primary">{value}</p>
-      {hint ? <p className="mt-0.5 text-xs text-tertiary">{hint}</p> : null}
-    </div>
-  );
-}
-
 export function PlatformClient({
   tenants,
-  stats,
   selfOrgId,
 }: {
   tenants: Tenant[];
-  stats: Stats;
   selfOrgId: string;
 }) {
   const router = useRouter();
@@ -148,30 +127,6 @@ Reason (min 5 chars):`);
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="Active tenants" value={String(stats.totalTenants)} />
-        <Stat label="Active seats" value={String(stats.activeSeats)} hint="Across all tenants" />
-        <Stat
-          label="Companies active · 7d"
-          value={`${stats.companiesActive7d} / ${stats.totalTenants}`}
-          hint="Activation north-star"
-        />
-        <Stat
-          label="Users active · 7d"
-          value={String(stats.usersActive7d)}
-          hint="Distinct signed-in users"
-        />
-        <Stat
-          label="By plan"
-          value={stats.byPlan.map((p) => `${p.plan} ${p.count}`).join(" · ") || "—"}
-        />
-        <Stat
-          label="Trials ending ≤7d"
-          value={String(stats.trialsEndingSoon)}
-          hint="Chase these before they lapse"
-        />
-      </div>
-
       <Card>
         <CardHeader title={`Tenants (${tenants.length})`} subtitle="Subscription lifecycle + access controls per tenant." />
         {tenants.length === 0 ? (

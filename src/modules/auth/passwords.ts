@@ -152,6 +152,17 @@ export async function resetPassword(rawToken: string, next: string): Promise<voi
   await db.update(users).set({ passwordHash, lockedUntil: null }).where(eq(users.id, row.userId));
   await db.update(passwordResetTokens).set({ usedAt: new Date() }).where(eq(passwordResetTokens.id, row.id));
   await db.delete(sessions).where(eq(sessions.userId, row.userId));
+  // G-07: a completed self-reset supersedes any pending managed-mode request
+  // for this user — the admin queue must not list work that already happened.
+  await db
+    .update(passwordChangeRequests)
+    .set({ status: "approved", decidedAt: new Date() })
+    .where(
+      and(
+        eq(passwordChangeRequests.userId, row.userId),
+        eq(passwordChangeRequests.status, "pending"),
+      ),
+    );
 }
 
 export async function listOwnSessions(ctx: AuthContext, currentToken?: string | null) {

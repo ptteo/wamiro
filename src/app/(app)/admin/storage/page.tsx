@@ -1,5 +1,7 @@
+import { AdminNav } from "@/components/admin-ui";
 import { PageHeader } from "@/components/page-header";
 import { Badge, Card, EmptyState } from "@/components/ui";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { formatBytes, orgStorageUsage } from "@/modules/storage/service";
@@ -26,6 +28,20 @@ export default async function AdminStoragePage() {
         title="Storage"
         subtitle="How much space this organization uses in object storage, by category."
       />
+
+      <AdminNav
+        items={adminTabsFor(
+          (p) => can(ctx.access, p),
+          ctx.org.modules
+        )}
+      />
+
+      {usage.truncated ? (
+        <p className="rounded-lg border border-warning/30 bg-warning-subtle px-4 py-3 text-sm text-warning">
+          This organization has more than {usage.totalObjects.toLocaleString()} stored objects — the totals below
+          count the first {usage.totalObjects.toLocaleString()} only and are under-counted.
+        </p>
+      ) : null}
 
       <section className="overflow-hidden rounded-lg border border-border-subtle bg-surface">
         <div className="flex flex-col gap-4 border-b border-border-subtle p-5 sm:flex-row sm:items-center sm:justify-between">

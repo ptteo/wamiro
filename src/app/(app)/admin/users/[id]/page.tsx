@@ -2,9 +2,10 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 
-import { AdminSection } from "@/components/admin-ui";
+import { AdminNav, AdminSection } from "@/components/admin-ui";
 import { Badge, Card, EmptyState, btn } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { can } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
@@ -58,6 +59,13 @@ export default async function AdminUserDetailPage({
           <Badge tone="neutral">This is you</Badge>
         )}
       </PageHeader>
+
+      <AdminNav
+        items={adminTabsFor(
+          (p) => can(ctx.access, p),
+          ctx.org.modules
+        )}
+      />
 
       <AdminSection title="Identity">
         <dl className="divide-y divide-border-subtle text-sm">

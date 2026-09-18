@@ -1,14 +1,28 @@
+export const dynamic = "force-dynamic";
+
 import Link from "next/link";
+import {
+  ClipboardCheck,
+  ScrollText,
+  Shield,
+  UserCog,
+  Users,
+  Plug,
+  Package,
+  Inbox,
+  Network,
+  Building2,
+  HardDrive,
+} from "lucide-react";
 
-import { DepartmentsClient } from "@/components/departments-client";
-
-import { AdminKpi, AdminKpiStrip, AdminSection } from "@/components/admin-ui";
-import { Badge, Card, EmptyState, btn } from "@/components/ui";
+import { AdminAttentionRow, AdminKpi, AdminKpiStrip, AdminNav, AdminSection, AdminTile } from "@/components/admin-ui";
+import { Badge, Card, EmptyState } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
+import { DepartmentsClient } from "@/components/departments-client";
 import { SECURITY_AUDIT_ACTIONS, SECURITY_AUDIT_QUERY } from "@/lib/admin-security";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { listDepartments } from "@/modules/org/service";
-
 import { can } from "@/modules/iam/engine";
 import { isModuleEnabled } from "@/modules/iam/catalog";
 import {
@@ -17,10 +31,10 @@ import {
   listRolesWithCounts,
   listOrgSessions,
 } from "@/modules/admin/service";
-
-export const dynamic = "force-dynamic";
+import { listPasswordChangeRequests } from "@/modules/auth/passwords";
 
 export const metadata = { title: "Admin" };
+
 
 function Denied() {
   return (
@@ -45,6 +59,7 @@ export default async function AdminPage() {
     return <Denied />;
   }
 
+  const tabs = adminTabsFor((p) => can(ctx.access, p), ctx.org.modules);
   const overview = await getAdminOverview(ctx);
   const orgSessions = can(ctx.access, "users.manage") ? await listOrgSessions(ctx) : [];
   const liveSessions = orgSessions.filter((s) => !s.expired).length;
@@ -55,14 +70,33 @@ export default async function AdminPage() {
       ? listAuditLogs(ctx, {
           action: SECURITY_AUDIT_ACTIONS.join(","),
           since: since24h,
-          limit: 10,
+          limit: 8,
         })
       : Promise.resolve([]),
-    can(ctx.access, "audit.view") ? listAuditLogs(ctx, { limit: 12 }) : Promise.resolve([]),
+    can(ctx.access, "audit.view") ? listAuditLogs(ctx, { limit: 8 }) : Promise.resolve([]),
     can(ctx.access, "roles.manage") ? listRolesWithCounts(ctx) : Promise.resolve([]),
   ]);
 
+  const pendingPasswordRequests = can(ctx.access, "users.manage")
+    ? (await listPasswordChangeRequests(ctx)).length
+    : 0;
+
+  // G-26 — departments are rendered further down; fetch them with the other
+  // data instead of an inline `await` inside the JSX tree.
+  const departments = can(ctx.access, "departments.manage") || can(ctx.access, "data.export") || can(ctx.access, "audit.view")
+    ? await listDepartments(ctx)
+    : [];
+
   const attention: { label: string; detail: string; href: string; show: boolean }[] = [
+    {
+      label: "Password change requests",
+      detail:
+        pendingPasswordRequests === 1
+          ? "1 user is waiting for approval to change their password (managed mode)."
+          : `${pendingPasswordRequests} users are waiting for approval to change their password (managed mode).`,
+      href: "/admin/security#password-requests",
+      show: pendingPasswordRequests > 0,
+    },
     {
       label: "Suspended users",
       detail: `${overview.users.suspended} of ${overview.users.total} user${overview.users.total === 1 ? "" : "s"} are suspended.`,
@@ -76,9 +110,9 @@ export default async function AdminPage() {
       show: overview.expiringOverrides > 0,
     },
     {
-      label: "Active override grants",
+      label: "Active overrides",
       detail: `${overview.activeOverrides} permission override${overview.activeOverrides === 1 ? "" : "s"} currently in effect.`,
-      href: "/admin/users",
+      href: "/admin/access-reviews",
       show: overview.activeOverrides > 0,
     },
   ];
@@ -87,6 +121,112 @@ export default async function AdminPage() {
     ? Math.round((overview.users.mfaEnabled / overview.users.total) * 100)
     : 0;
 
+  const customRoles = orgRoles.filter((r) => !r.isSystem).length;
+
+  const tiles: {
+    href: string;
+    icon: typeof Users;
+    label: string;
+    hint: string;
+    count?: number;
+    countLabel?: string;
+    tone?: "neutral" | "warning" | "danger" | "brand" | "success";
+    show: boolean;
+  }[] = [
+    {
+      href: "/admin/users",
+      icon: Users,
+      label: "Users",
+      hint: "Invite people, assign roles, suspend access, grant temporary permissions.",
+      count: overview.users.suspended,
+      countLabel: overview.users.suspended === 1 ? "suspended" : "suspended",
+      tone: overview.users.suspended > 0 ? "warning" : "neutral",
+      show: can(ctx.access, "users.manage") || can(ctx.access, "roles.manage"),
+    },
+    {
+      href: "/admin/roles",
+      icon: UserCog,
+      label: "Roles",
+      hint: "Permission bundles with holders and scopes.",
+      count: orgRoles.length,
+      tone: "neutral",
+      show: can(ctx.access, "roles.manage"),
+    },
+    {
+      href: "/admin/access-reviews",
+      icon: ClipboardCheck,
+      label: "Access reviews",
+      hint: "Confirm elevated roles and overrides are still justified.",
+      count: overview.activeOverrides,
+      countLabel: "active",
+      tone: overview.expiringOverrides > 0 ? "warning" : "neutral",
+      show: can(ctx.access, "roles.manage") || can(ctx.access, "users.manage"),
+    },
+    {
+      href: "/admin/security",
+      icon: Shield,
+      label: "Security",
+      hint: "MFA policy, sessions and password change requests.",
+      count: liveSessions,
+      countLabel: "live sessions",
+      tone: mfaPct < 50 && overview.users.total > 0 ? "warning" : "neutral",
+      show: can(ctx.access, "users.manage"),
+    },
+    {
+      href: "/admin/audit",
+      icon: ScrollText,
+      label: "Audit log",
+      hint: "Every administrative action, filterable and exportable.",
+      show: can(ctx.access, "audit.view"),
+    },
+    {
+      href: "/admin/organization",
+      icon: Building2,
+      label: "Organization",
+      hint: "Departments and audited CSV exports.",
+      show:
+        can(ctx.access, "departments.manage") ||
+        can(ctx.access, "data.export") ||
+        can(ctx.access, "audit.view"),
+    },
+    {
+      href: "/admin/storage",
+      icon: HardDrive,
+      label: "Storage",
+      hint: "Object storage usage by category.",
+      show: can(ctx.access, "users.manage") || can(ctx.access, "settings.manage"),
+    },
+    {
+      href: "/admin/integrations",
+      icon: Plug,
+      label: "Integrations",
+      hint: "Webhooks, SSO and SCIM provisioning.",
+      show: can(ctx.access, "settings.manage"),
+    },
+    {
+      href: "/admin/services",
+      icon: Package,
+      label: "Services",
+      hint: "The catalog employees can request.",
+      show: isModuleEnabled(ctx.org.modules, "tickets") && can(ctx.access, "services.manage"),
+    },
+    {
+      href: "/admin/ticket-groups",
+      icon: Network,
+      label: "Ticket groups",
+      hint: "Routing rules and triage teams.",
+      show: isModuleEnabled(ctx.org.modules, "tickets") && can(ctx.access, "tickets.manage"),
+    },
+    {
+      href: "/admin/mailboxes",
+      icon: Inbox,
+      label: "Mailboxes",
+      hint: "Email-to-ticket inboxes.",
+      show: isModuleEnabled(ctx.org.modules, "tickets") && can(ctx.access, "tickets.manage"),
+    },
+  ];
+  const visibleTiles = tiles.filter((t) => t.show);
+
   return (
     <div className="min-w-0 space-y-5">
       <PageHeader
@@ -94,89 +234,76 @@ export default async function AdminPage() {
         subtitle={`Users, roles, security and audit for ${ctx.org.name}.`}
       />
 
-      <p className="text-[11px] text-tertiary">
-        Tenant administration. Every invite, role change, override and export is audited.
-      </p>
+      <AdminNav items={tabs} />
 
       <AdminKpiStrip>
-          <AdminKpi
-            label="Users"
-            value={overview.users.total}
-            hint={`${overview.users.active} active · ${overview.users.suspended} suspended`}
-          />
-          <AdminKpi
-            label="MFA enrolled"
-            value={`${mfaPct}%`}
-            hint={`${overview.users.mfaEnabled} of ${overview.users.total}`}
-            tone={mfaPct < 50 && overview.users.total > 0 ? "warning" : "success"}
-          />
-          <AdminKpi
-            label="Live sessions"
-            value={liveSessions}
-            hint="Across the tenant"
-          />
-          <AdminKpi
-            label="Overrides"
-            value={overview.activeOverrides}
-            hint={
-              overview.expiringOverrides > 0
-                ? `${overview.expiringOverrides} expire within 7 days`
-                : `${overview.roles} roles in use`
-            }
-            tone={overview.expiringOverrides > 0 ? "warning" : "neutral"}
-          />
+        <AdminKpi
+          label="Users"
+          value={overview.users.total}
+          hint={`${overview.users.active} active · ${overview.users.suspended} suspended`}
+          href="/admin/users"
+        />
+        <AdminKpi
+          label="MFA enrolled"
+          value={`${mfaPct}%`}
+          hint={`${overview.users.mfaEnabled} of ${overview.users.total}`}
+          tone={mfaPct < 50 && overview.users.total > 0 ? "warning" : "success"}
+          href="/admin/security"
+        />
+        <AdminKpi
+          label="Live sessions"
+          value={liveSessions}
+          hint="Across the tenant"
+          href="/admin/security"
+        />
+        <AdminKpi
+          label="Overrides"
+          value={overview.activeOverrides}
+          hint={
+            overview.expiringOverrides > 0
+              ? `${overview.expiringOverrides} expire within 7 days`
+              : `${overview.roles} roles in use`
+          }
+          tone={overview.expiringOverrides > 0 ? "warning" : "neutral"}
+          href="/admin/access-reviews"
+        />
       </AdminKpiStrip>
-
-      <div className="flex flex-wrap gap-2">
-        {can(ctx.access, "users.manage") ? (
-          <Link href="/admin/users" className={`${btn.secondary} ${btn.small}`}>
-            Access control
-          </Link>
-        ) : null}
-        {can(ctx.access, "roles.manage") ? (
-          <Link href="/admin/roles" className={`${btn.secondary} ${btn.small}`}>
-            Roles
-          </Link>
-        ) : null}
-        {can(ctx.access, "users.manage") ? (
-          <Link href="/admin/security" className={`${btn.secondary} ${btn.small}`}>
-            Security center
-          </Link>
-        ) : null}
-        {can(ctx.access, "audit.view") ? (
-          <Link href="/admin/audit" className={`${btn.secondary} ${btn.small}`}>
-            Audit log
-          </Link>
-        ) : null}
-        {can(ctx.access, "users.manage") ? (
-          <Link href="/admin/storage" className={`${btn.secondary} ${btn.small}`}>
-            Storage
-          </Link>
-        ) : null}
-        {can(ctx.access, "roles.manage") ? (
-          <Link href="/admin/access-reviews" className={`${btn.secondary} ${btn.small}`}>
-            Access reviews
-          </Link>
-        ) : null}
-      </div>
 
       {attentionOpen.length > 0 ? (
         <AdminSection title="Attention required" subtitle="Things that need a decision" tone="warning">
           <ul className="divide-y divide-border-subtle">
             {attentionOpen.map((a) => (
-              <li key={a.label} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <p className="font-medium text-primary">{a.label}</p>
-                  <p className="text-xs text-tertiary">{a.detail}</p>
-                </div>
-                <Link href={a.href} className={`${btn.secondary} ${btn.small} w-full sm:w-auto`}>
-                  Review
-                </Link>
-              </li>
+              <AdminAttentionRow
+                key={a.label}
+                title={a.label}
+                detail={a.detail}
+                action={
+                  <Link href={a.href} className="text-sm font-medium text-brand-text hover:underline">
+                    Review →
+                  </Link>
+                }
+              />
             ))}
           </ul>
         </AdminSection>
       ) : null}
+
+      <AdminSection title="Where do you want to go?" subtitle="Everything in the console, one click away">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {visibleTiles.map((t) => (
+            <AdminTile
+              key={t.href}
+              href={t.href}
+              icon={t.icon}
+              label={t.label}
+              hint={t.hint}
+              count={t.count}
+              countLabel={t.countLabel}
+              tone={t.tone}
+            />
+          ))}
+        </div>
+      </AdminSection>
 
       {securityEvents.length > 0 ? (
         <AdminSection
@@ -187,9 +314,9 @@ export default async function AdminPage() {
             can(ctx.access, "audit.view") ? (
               <Link
                 href={`/admin/audit?action=${encodeURIComponent(SECURITY_AUDIT_QUERY)}`}
-                className={`${btn.secondary} ${btn.small}`}
+                className="text-sm font-medium text-brand-text hover:underline"
               >
-                Open audit
+                Open audit →
               </Link>
             ) : null
           }
@@ -211,42 +338,42 @@ export default async function AdminPage() {
         </AdminSection>
       ) : null}
 
-      {can(ctx.access, "data.export") ? (
-        <AdminSection title="Data export" subtitle="CSV downloads are audited" tone="brand">
-          <div className="flex flex-wrap gap-2">
-            {["employees", "attendance", "leave", "audit", "hr-headcount", "hr-attrition", "hr-leave", "hr-payroll", "support-tickets", "support-sla", "support-csat"].map((d) => (
-              <a key={d} href={`/api/v1/admin/export/${d}`} className={`${btn.secondary} ${btn.small}`}>
-                Export {d}
-              </a>
-            ))}
-          </div>
+      {can(ctx.access, "departments.manage") ||
+      can(ctx.access, "data.export") ||
+      can(ctx.access, "audit.view") ? (
+        <AdminSection
+          title="Organization"
+          subtitle="Departments and data exports"
+          action={
+            <Link href="/admin/organization" className="text-sm font-medium text-brand-text hover:underline">
+              Open →
+            </Link>
+          }
+        >
+          <DepartmentsClient
+            departments={departments.map((d) => ({
+              id: d.id,
+              name: d.name,
+              managerName: d.managerName,
+              memberCount: Number(d.memberCount),
+            }))}
+            canManage={can(ctx.access, "departments.manage")}
+          />
         </AdminSection>
       ) : null}
 
-      <DepartmentsClient
-        departments={(await listDepartments(ctx)).map((d) => ({
-          id: d.id,
-          name: d.name,
-          managerName: d.managerName,
-          memberCount: Number(d.memberCount),
-        }))}
-        canManage={can(ctx.access, "departments.manage")}
-      />
-
-      {orgRoles.length > 0 ? (
+      {orgRoles.length > 0 && can(ctx.access, "roles.manage") ? (
         <AdminSection
           title="Roles in use"
-          subtitle={`${orgRoles.length} bundle${orgRoles.length === 1 ? "" : "s"}`}
+          subtitle={`${orgRoles.length} bundle${orgRoles.length === 1 ? "" : "s"}${customRoles > 0 ? ` · ${customRoles} custom` : ""}`}
           action={
-            can(ctx.access, "roles.manage") ? (
-              <Link href="/admin/roles" className={`${btn.secondary} ${btn.small}`}>
-                Manage
-              </Link>
-            ) : null
+            <Link href="/admin/roles" className="text-sm font-medium text-brand-text hover:underline">
+              Manage →
+            </Link>
           }
         >
           <ul className="divide-y divide-border-subtle">
-            {orgRoles.map((r) => (
+            {orgRoles.slice(0, 8).map((r) => (
               <li key={r.id} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <Link href={`/admin/roles/${r.id}`} className="min-w-0">
                   <p className="font-medium text-primary hover:underline">{r.name}</p>
@@ -270,8 +397,8 @@ export default async function AdminPage() {
           subtitle="Latest administrative actions"
           action={
             can(ctx.access, "audit.view") ? (
-              <Link href="/admin/audit" className={`${btn.secondary} ${btn.small}`}>
-                Open audit
+              <Link href="/admin/audit" className="text-sm font-medium text-brand-text hover:underline">
+                Open audit →
               </Link>
             ) : null
           }

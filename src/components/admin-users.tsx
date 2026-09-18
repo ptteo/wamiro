@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AdminSection } from "./admin-ui";
 import { InviteResult } from "./invite-teammate";
-import { Avatar, Badge, EmptyState, btn, input, statusTone } from "./ui";
+import { Avatar, Badge, Table, THead, Th, Tr, Td, EmptyState, btn, input, statusTone } from "./ui";
 
 interface UserRow {
   id: string;
@@ -40,6 +40,8 @@ export function AdminUsersClient({
   permissions,
   canManageUsers,
   canManageRoles,
+  totalUsers,
+  initialQuery = "",
 }: {
   users: UserRow[];
   roles: RoleRow[];
@@ -47,6 +49,10 @@ export function AdminUsersClient({
   permissions: string[];
   canManageUsers: boolean;
   canManageRoles: boolean;
+  /** G-20 — total matching rows server-side (listing may be bounded). */
+  totalUsers?: number;
+  /** G-20 — server-applied query, so the input starts consistent with the URL. */
+  initialQuery?: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -57,7 +63,12 @@ export function AdminUsersClient({
     inviteUrl?: string;
     linked?: boolean;
   } | null>(null);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialQuery);
+  // G-20 — pending debounce handle for server-side search sync.
+  const serverSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (serverSyncRef.current) clearTimeout(serverSyncRef.current);
+  }, []);
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "suspended" | "invited">("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
 
@@ -128,12 +139,31 @@ export function AdminUsersClient({
       ) : null}
 
       <AdminSection title={`Users (${filteredUsers.length}${filteredUsers.length === users.length ? "" : ` of ${users.length}`})`}>
+        {/* G-20 — a truncated listing needs an explicit notice, not silence. */}
+        {totalUsers !== undefined && users.length < totalUsers ? (
+          <p className="mb-2 rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning">
+            Showing the first {users.length} of {totalUsers} users{search ? " matching the current filters" : ""}. Refine
+            the search to narrow the list.
+          </p>
+        ) : null}
         <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
             <input
               aria-label="Search users"
               placeholder="Name or email…"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                // G-20 — debounce-sync the query to the server so large orgs
+                // get a fresh bounded page as they type.
+                if (serverSyncRef.current) clearTimeout(serverSyncRef.current);
+                const v = e.target.value;
+                serverSyncRef.current = setTimeout(() => {
+                  const url = new URL(window.location.href);
+                  if (v.trim()) url.searchParams.set("q", v.trim());
+                  else url.searchParams.delete("q");
+                  router.replace(url.toString(), { scroll: false });
+                }, 400);
+              }}
               className={`${input} h-9 min-w-0`}
             />
             <select
@@ -166,69 +196,87 @@ export function AdminUsersClient({
         ) : filteredUsers.length === 0 ? (
           <p className="py-6 text-center text-sm text-tertiary">No users match your filter.</p>
         ) : (
-          <ul className="divide-y divide-border-subtle">
-            {filteredUsers.map((u) => (
-              <li key={u.id} className="flex flex-col gap-2 py-3.5 sm:flex-row sm:items-center sm:gap-3">
-                <div className="flex min-w-0 items-center gap-3">
-                <Avatar name={u.name} />
-                <div className="min-w-0 flex-1">
-                  <Link href={`/admin/users/${u.id}`} className="block truncate text-sm font-medium text-primary hover:underline">
-                    {u.name}
-                  </Link>
-                  <p className="truncate text-xs text-tertiary">
-                    {u.email}
-                    {u.lastLoginAt
-                      ? ` · last seen ${new Date(u.lastLoginAt).toLocaleDateString()}`
-                      : " · never signed in"}
-                  </p>
-                </div>
-                <Badge tone={statusTone(u.status)}>{u.status}</Badge>
-                </div>
-                <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-auto">
-                  {u.roles.map((r) => (
-                    <span key={r.id} className="inline-flex items-center gap-1">
-                      <Badge tone="brand">{r.name}</Badge>
-                      {canManageRoles ? (
-                        <button
-                          type="button"
-                          aria-label={`Remove ${r.name} from ${u.name}`}
-                          disabled={busy}
-                          onClick={() => call(`/api/v1/admin/users/${u.id}/roles`, "DELETE", { roleId: r.id })}
-                          className="text-xs text-tertiary hover:text-danger"
+          <Table>
+            <THead>
+              <tr>
+                <Th>Person</Th>
+                <Th>Status</Th>
+                <Th>Roles</Th>
+              </tr>
+            </THead>
+            <tbody>
+              {filteredUsers.map((u) => (
+                <Tr key={u.id}>
+                  <Td>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar name={u.name} />
+                      <div className="min-w-0">
+                        <Link
+                          href={`/admin/users/${u.id}`}
+                          className="block truncate text-sm font-medium text-primary hover:underline"
                         >
-                          ×
-                        </button>
-                      ) : null}
-                    </span>
-                  ))}
-                  {canManageRoles && roles.length > u.roles.length ? (
-                    <select
-                      aria-label={`Add role to ${u.name}`}
-                      className={`${input} h-8 min-w-0 py-0 text-xs sm:w-36`}
-                      disabled={busy}
-                      defaultValue=""
-                      onChange={(e) => {
-                        const roleId = e.target.value;
-                        if (roleId) void call(`/api/v1/admin/users/${u.id}/roles`, "POST", { roleId });
-                        e.target.value = "";
-                      }}
-                    >
-                      <option value="" disabled>
-                        + add role…
-                      </option>
-                      {roles
-                        .filter((r) => !u.roles.some((ur) => ur.id === r.id))
-                        .map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.name}
+                          {u.name}
+                        </Link>
+                        <p className="truncate text-xs text-tertiary">
+                          {u.email}
+                          {u.lastLoginAt
+                            ? ` · last seen ${new Date(u.lastLoginAt).toLocaleDateString()}`
+                            : " · never signed in"}
+                        </p>
+                      </div>
+                    </div>
+                  </Td>
+                  <Td>
+                    <Badge tone={statusTone(u.status)}>{u.status}</Badge>
+                  </Td>
+                  <Td>
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      {u.roles.map((r) => (
+                        <span key={r.id} className="inline-flex items-center gap-1">
+                          <Badge tone="brand">{r.name}</Badge>
+                          {canManageRoles ? (
+                            <button
+                              type="button"
+                              aria-label={`Remove ${r.name} from ${u.name}`}
+                              disabled={busy}
+                              onClick={() => call(`/api/v1/admin/users/${u.id}/roles`, "DELETE", { roleId: r.id })}
+                              className="text-xs text-tertiary hover:text-danger"
+                            >
+                              ×
+                            </button>
+                          ) : null}
+                        </span>
+                      ))}
+                      {canManageRoles && roles.length > u.roles.length ? (
+                        <select
+                          aria-label={`Add role to ${u.name}`}
+                          className={`${input} h-8 min-w-0 py-0 text-xs sm:w-36`}
+                          disabled={busy}
+                          defaultValue=""
+                          onChange={(e) => {
+                            const roleId = e.target.value;
+                            if (roleId) void call(`/api/v1/admin/users/${u.id}/roles`, "POST", { roleId });
+                            e.target.value = "";
+                          }}
+                        >
+                          <option value="" disabled>
+                            + add role…
                           </option>
-                        ))}
-                    </select>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-          </ul>
+                          {roles
+                            .filter((r) => !u.roles.some((ur) => ur.id === r.id))
+                            .map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {r.name}
+                              </option>
+                            ))}
+                        </select>
+                      ) : null}
+                    </div>
+                  </Td>
+                </Tr>
+              ))}
+            </tbody>
+          </Table>
         )}
       </AdminSection>
 

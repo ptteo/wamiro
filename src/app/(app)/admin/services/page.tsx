@@ -1,8 +1,10 @@
 export const dynamic = "force-dynamic";
 
 import { ServicesAdminClient } from "@/components/services-admin-client";
+import { AdminNav } from "@/components/admin-ui";
 import { Card, EmptyState } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
+import { adminTabsFor } from "@/lib/admin-nav";
 import { requireAuthPage } from "@/lib/page-auth";
 import { isModuleEnabled } from "@/modules/iam/catalog";
 import { can } from "@/modules/iam/engine";
@@ -20,9 +22,14 @@ export default async function AdminServicesPage() {
     );
   }
   const services = await listForAdmin(ctx);
+  const tabs = adminTabsFor(
+    (p) => can(ctx.access, p),
+    ctx.org.modules
+  );
   return (
     <div className="space-y-6">
       <PageHeader title="Service catalog" subtitle="Configure the services employees can request." />
+      <AdminNav items={tabs} />
       <ServicesAdminClient
         services={services.map((s) => ({
           id: s.id,

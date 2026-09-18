@@ -12,7 +12,7 @@ import { emit } from "@/lib/events";
 import { ApiError } from "@/lib/errors";
 import { hashPassword } from "@/lib/password";
 import { enforceRateLimit } from "@/lib/ratelimit";
-import type { AuthContext } from "@/lib/session";
+import { bumpUserSessions, type AuthContext } from "@/lib/session";
 import { assertSeatAvailable, syncSeatsAfterInvite } from "@/modules/billing/service";
 import { sendInviteEmail } from "@/lib/mail/activation";
 import {
@@ -73,6 +73,69 @@ export async function listUsersWithRoles(ctx: AuthContext): Promise<AdminUserRow
     byUser.set(r.userId, list);
   }
   return userRows.map((u) => ({ ...u, roles: byUser.get(u.id) ?? [] }));
+}
+
+/**
+ * G-20 — bounded, server-side-filtered user listing for the admin users page.
+ * The unbounded `listUsersWithRoles` stays for access reviews and the API;
+ * the interactive page hydrates at most `limit` rows matching `q` and reports
+ * `total` so the UI can say when the listing is truncated.
+ */
+export async function listUsersBounded(
+  ctx: AuthContext,
+  opts: { q?: string; limit?: number } = {},
+): Promise<{ rows: AdminUserRow[]; total: number }> {
+  const orgId = ctx.user.organizationId;
+  const limit = Math.min(Math.max(opts.limit ?? 500, 1), 1000);
+  const q = opts.q?.trim();
+  const pattern = q ? `%${q.replace(/[%_]/g, "\\$&")}%` : null;
+
+  const where = pattern
+    ? and(
+        eq(users.organizationId, orgId),
+        sql`(${users.name} ILIKE ${pattern} OR ${users.email} ILIKE ${pattern})`,
+      )
+    : eq(users.organizationId, orgId);
+
+  const [userRows, countRes] = await Promise.all([
+    db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        status: users.status,
+        lastLoginAt: users.lastLoginAt,
+      })
+      .from(users)
+      .where(where)
+      .orderBy(asc(users.name))
+      .limit(limit),
+    db.select({ n: sql<number>`count(*)::int` }).from(users).where(where),
+  ]);
+
+  const roleRows = userRows.length
+    ? await db
+        .select({
+          userId: userRoles.userId,
+          roleId: roles.id,
+          roleKey: roles.key,
+          roleName: roles.name,
+        })
+        .from(userRoles)
+        .innerJoin(roles, eq(roles.id, userRoles.roleId))
+        .where(and(eq(roles.organizationId, orgId), inArray(userRoles.userId, userRows.map((u) => u.id))))
+    : [];
+
+  const byUser = new Map<string, AdminUserRow["roles"]>();
+  for (const r of roleRows) {
+    const list = byUser.get(r.userId) ?? [];
+    list.push({ id: r.roleId, key: r.roleKey, name: r.roleName });
+    byUser.set(r.userId, list);
+  }
+  return {
+    rows: userRows.map((u) => ({ ...u, roles: byUser.get(u.id) ?? [] })),
+    total: countRes[0]?.n ?? 0,
+  };
 }
 
 export async function inviteUser(
@@ -225,6 +288,7 @@ export async function assignRole(ctx: AuthContext, userId: string, roleId: strin
     entityId: userId,
     newValue: { roleId },
   });
+  await bumpUserSessions(userId); // G-06: cap session TTL after privilege change
 }
 
 export async function removeRole(ctx: AuthContext, userId: string, roleId: string): Promise<void> {
@@ -265,6 +329,7 @@ export async function removeRole(ctx: AuthContext, userId: string, roleId: strin
     entityId: userId,
     oldValue: { roleId },
   });
+  await bumpUserSessions(userId); // G-06: cap session TTL after privilege change
 }
 
 // ---------- overrides (temporary/direct permissions) ----------
@@ -352,6 +417,7 @@ export async function addOverride(
       reason: input.reason,
     },
   });
+  await bumpUserSessions(input.userId); // G-06: cap session TTL after privilege change
 }
 
 export async function removeOverride(ctx: AuthContext, overrideId: string): Promise<void> {
@@ -376,6 +442,7 @@ export async function removeOverride(ctx: AuthContext, overrideId: string): Prom
     entityId: row.userId,
     oldValue: { overrideId, permission: row.permission },
   });
+  await bumpUserSessions(row.userId); // G-06: cap session TTL after privilege change
 }
 
 /** Roles available to this tenant (for pickers). */
@@ -424,51 +491,54 @@ function orgAuditWhere(ctx: AuthContext) {
 /** Compact numbers for the Admin Home overview + attention lists. */
 export async function getAdminOverview(ctx: AuthContext) {
   const orgId = ctx.user.organizationId;
-  const [userStats] = await db
-    .select({
-      total: sql<number>`count(*)::int`,
-      active: sql<number>`count(*) filter (where ${users.status} = 'active')::int`,
-      suspended: sql<number>`count(*) filter (where ${users.status} = 'suspended')::int`,
-      mfaEnabled: sql<number>`count(*) filter (where ${users.totpEnabled})::int`,
-    })
-    .from(users)
-    .where(eq(users.organizationId, orgId));
+  // G-21 — these five reads are independent: run them concurrently instead of
+  // five sequential round-trips (the console home was paying ~5× RTT + pool
+  // hold time before first paint).
+  const [userStatsArr, sessionStatsArr, roleStatsArr, recentActivity, overrides] = await Promise.all([
+    db
+      .select({
+        total: sql<number>`count(*)::int`,
+        active: sql<number>`count(*) filter (where ${users.status} = 'active')::int`,
+        suspended: sql<number>`count(*) filter (where ${users.status} = 'suspended')::int`,
+        mfaEnabled: sql<number>`count(*) filter (where ${users.totpEnabled})::int`,
+      })
+      .from(users)
+      .where(eq(users.organizationId, orgId)),
+    db
+      .select({
+        activeSessions: sql<number>`count(*) filter (where ${sessions.expiresAt} > now())::int`,
+      })
+      .from(sessions)
+      .innerJoin(users, eq(users.id, sessions.userId))
+      .where(eq(users.organizationId, orgId)),
+    db
+      .select({ total: sql<number>`count(distinct ${roles.id})::int` })
+      .from(roles)
+      .where(eq(roles.organizationId, orgId)),
+    db
+      .select({
+        id: auditLogs.id,
+        action: auditLogs.action,
+        entityType: auditLogs.entityType,
+        entityId: auditLogs.entityId,
+        actorName: users.name,
+        createdAt: auditLogs.createdAt,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(users.id, auditLogs.actorUserId))
+      .where(orgAuditWhere(ctx))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(10),
+    listOverrides(ctx),
+  ]);
 
-  const [sessionStats] = await db
-    .select({
-      activeSessions: sql<number>`count(*) filter (where ${sessions.expiresAt} > now())::int`,
-    })
-    .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
-    .where(eq(users.organizationId, orgId));
-
-  const [roleStats] = await db
-    .select({ total: sql<number>`count(distinct ${roles.id})::int` })
-    .from(roles)
-    .where(eq(roles.organizationId, orgId));
-
-  const recentActivity = await db
-    .select({
-      id: auditLogs.id,
-      action: auditLogs.action,
-      entityType: auditLogs.entityType,
-      entityId: auditLogs.entityId,
-      actorName: users.name,
-      createdAt: auditLogs.createdAt,
-    })
-    .from(auditLogs)
-    .leftJoin(users, eq(users.id, auditLogs.actorUserId))
-    .where(orgAuditWhere(ctx))
-    .orderBy(desc(auditLogs.createdAt))
-    .limit(10);
-
-  const overrides = await listOverrides(ctx);
+  const userStats = userStatsArr[0] ?? { total: 0, active: 0, suspended: 0, mfaEnabled: 0 };
   const activeOverrides = overrides.filter((o) => !o.expiresAt || o.expiresAt > new Date());
 
   return {
-    users: userStats ?? { total: 0, active: 0, suspended: 0, mfaEnabled: 0 },
-    activeSessions: sessionStats?.activeSessions ?? 0,
-    roles: roleStats?.total ?? 0,
+    users: userStats,
+    activeSessions: sessionStatsArr[0]?.activeSessions ?? 0,
+    roles: roleStatsArr[0]?.total ?? 0,
     activeOverrides: activeOverrides.length,
     expiringOverrides: overrides.filter(
       (o) => o.expiresAt && o.expiresAt > new Date() && o.expiresAt < new Date(Date.now() + 7 * 86_400_000),
@@ -679,10 +749,55 @@ export async function listOrgSessions(ctx: AuthContext) {
   return rows.map((s) => ({ ...s, expired: s.expiresAt <= now }));
 }
 
-/** Filterable central audit trail (§44–46): q/action/actor filters, paged. */
+// ---------- G-03: keyset pagination on the audit trail ----------
+
+/**
+ * Opaque keyset cursor: fetch rows strictly older than (createdAt, id).
+ * Postgres row-constructor comparison makes this a single index-backed seek
+ * instead of an O(offset+limit) scan, so "Load more" stays fast on page 500.
+ * Robust to concurrent inserts/deletes: no duplicates, no skipped rows.
+ */
+export interface AuditPageCursor {
+  createdAt: Date;
+  id: number;
+}
+
+/** Encode a row position as an opaque URL-safe cursor. */
+export function encodeAuditCursor(row: { createdAt: Date | string; id: number | string }): string {
+  return Buffer.from(JSON.stringify([new Date(row.createdAt).toISOString(), Number(row.id)]), "utf8").toString(
+    "base64url",
+  );
+}
+
+/** Decode a cursor; garbage/absent input = undefined (start from the top). */
+export function decodeAuditCursor(raw: string | null | undefined): AuditPageCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const [t, i] = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as [string, number];
+    const d = new Date(t);
+    if (!Number.isFinite(d.getTime()) || !Number.isFinite(i)) return undefined;
+    return { createdAt: d, id: i };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Filterable central audit trail (§44–46): q/action/actor/date filters, paged. */
 export async function listAuditLogs(
   ctx: AuthContext,
-  opts: { q?: string; action?: string; actorId?: string; limit?: number; since?: Date } = {},
+  opts: {
+    q?: string;
+    action?: string;
+    actorId?: string;
+    limit?: number;
+    /** Row offset for shallow pagination (page-1 × pageSize). Prefer `before`. */
+    offset?: number;
+    /** Keyset cursor (G-03): rows strictly older than this position. Wins over `offset`. */
+    before?: AuditPageCursor;
+    since?: Date;
+    /** Inclusive upper bound (end of day). Complements `since`. */
+    untilDate?: Date;
+  } = {},
 ) {
   const conditions = [orgAuditWhere(ctx)];
   if (opts.q) {
@@ -705,6 +820,13 @@ export async function listAuditLogs(
   }
   if (opts.actorId) conditions.push(eq(auditLogs.actorUserId, opts.actorId));
   if (opts.since) conditions.push(sql`${auditLogs.createdAt} >= ${opts.since.toISOString()}`);
+  if (opts.untilDate) conditions.push(sql`${auditLogs.createdAt} <= ${opts.untilDate.toISOString()}`);
+  if (opts.before) {
+    // lexicographic (createdAt, id) < cursor point — one index seek, not a scan
+    conditions.push(
+      sql`(${auditLogs.createdAt}, ${auditLogs.id}) < (${opts.before.createdAt.toISOString()}::timestamptz, ${opts.before.id}::bigint)`,
+    );
+  }
 
   return db
     .select({
@@ -723,8 +845,10 @@ export async function listAuditLogs(
     .from(auditLogs)
     .leftJoin(users, eq(users.id, auditLogs.actorUserId))
     .where(and(...conditions))
-    .orderBy(desc(auditLogs.createdAt))
-    .limit(Math.min(opts.limit ?? 50, 200));
+    // id tiebreak makes the order total — keyset pagination requires it
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+    .limit(Math.min(opts.limit ?? 50, 200))
+    .offset(opts.before ? 0 : Math.max(0, opts.offset ?? 0));
 }
 
 /** Roles with member counts for the Role List screen. */

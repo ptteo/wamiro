@@ -30,10 +30,13 @@ import { sweepExpiredTrials } from "@/modules/billing/service";
 import { sweepDunning } from "@/modules/billing/dunning";
 import { pollAllMailboxes } from "@/modules/mailboxes/service";
 import { rollupRecentUsage } from "@/modules/platform/usage";
+import { rollupRecentHealth } from "@/modules/platform/health";
+import { evaluateAlerts } from "@/modules/platform/alerts";
 import { sendWeeklyDigests } from "@/modules/notifications/service";
 import { purgeDueDeletions } from "@/modules/org/service";
 import { runRetentionSweep } from "@/modules/retention/service";
 import { sweepOrphanedObjects } from "@/modules/storage/orphans";
+import { ensureAccessReviewObligations } from "@/modules/admin/review-cadence";
 
 export type JobResult = { ok: boolean; detail: Record<string, unknown> };
 type Job = () => Promise<JobResult>;
@@ -46,7 +49,14 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   governance_sweep: { run: runPerOrgGovernanceSweep, everyMs: 60 * 60_000 },
   mailbox_poll: { run: runMailboxPoll, everyMs: 60_000 },
   usage_rollup: { run: runUsageRollup, everyMs: 60 * 60_000 },
+  // Admin panel Phase D — health scores + alert playbooks (§3.2/§3.5)
+  health_rollup: { run: runHealthRollup, everyMs: 60 * 60_000 },
+  alert_evaluator: { run: runAlertEvaluator, everyMs: 60 * 60_000 },
   email_digest: { run: runEmailDigest, everyMs: 60 * 60_000 },
+  // fold-in #2 (weekly operator digest — Mondays) + #13 (monthly operator
+  // self-audit). Both early-exit unless it's their day; the hourly tick keeps
+  // them punctual without a second scheduler.
+  operator_digest: { run: runOperatorDigest, everyMs: 60 * 60_000 },
   // Phase 4 — data-layer housekeeping
   retention_sweep: { run: runRetentionSweepJob, everyMs: 12 * 60 * 60_000 },
   deletion_sweep: { run: runDeletionSweepJob, everyMs: 60 * 60_000 },
@@ -57,6 +67,12 @@ export const JOBS: Record<string, { run: Job; everyMs: number }> = {
   assets_warranty_sweep: { run: runAssetsWarrantySweep, everyMs: 24 * 60 * 60_000 },
   work_recurrence_sweep: { run: runWorkRecurrenceSweep, everyMs: 24 * 60 * 60_000 },
   announcements_publish_sweep: { run: runAnnouncementsPublishSweep, everyMs: 5 * 60_000 },
+  // G-01 — replay audit rows that were dead-lettered during a DB outage
+  audit_dlq_replay: { run: runAuditDlqReplay, everyMs: 15 * 60_000 },
+  // G-08 — retry failed webhook deliveries with exponential backoff
+  webhook_retry_sweep: { run: runWebhookRetrySweep, everyMs: 5 * 60_000 },
+  // G-18 — quarterly access-review obligations (idempotent, cheap no-op when current)
+  access_review_cadence: { run: runAccessReviewCadence, everyMs: 60 * 60_000 },
 };
 
 /** Tenant ids the per-org sweeps iterate (platform org excluded). */
@@ -165,8 +181,55 @@ async function runEmailDigest(): Promise<JobResult> {
 }
 
 async function runUsageRollup(): Promise<JobResult> {
-  const { orgs, days } = await rollupRecentUsage();
-  return { ok: true, detail: { orgs, days } };
+  const { orgs, days, pruned } = await rollupRecentUsage();
+  // Ledger retention rides the same hourly tick (amendment #8: every ledger
+  // table is bounded; health scores prune inside rollupRecentHealth).
+  let ledgerPruned: Record<string, number> = {};
+  try {
+    const { pruneLedgerRetention } = await import("@/modules/platform/billing-ledger");
+    ledgerPruned = await pruneLedgerRetention();
+  } catch (e) {
+    ledgerPruned = { error: String(e).slice(0, 120) } as unknown as Record<string, number>;
+  }
+  return { ok: true, detail: { orgs, days, pruned, ledgerPruned } };
+}
+
+/** Phase D — yesterday (final) + today (provisional) health scores + retention prune. */
+async function runHealthRollup(): Promise<JobResult> {
+  try {
+    const r = await rollupRecentHealth();
+    return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** Phase D — evaluate alert rules (weekly-window dedupe makes this idempotent). */
+async function runAlertEvaluator(): Promise<JobResult> {
+  try {
+    const r = await evaluateAlerts();
+    return { ok: true, detail: r };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** fold-in #2 + #13 — Monday: weekly tenant digest; 1st of month: operator self-audit. */
+async function runOperatorDigest(): Promise<JobResult> {
+  const now = new Date();
+  const detail: Record<string, unknown> = {};
+  try {
+    const { sendWeeklyOperatorDigest, sendOperatorDigest } = await import("@/modules/platform/digests");
+    if (now.getUTCDay() === 1) {
+      detail.weekly = await sendWeeklyOperatorDigest();
+    }
+    if (now.getUTCDate() === 1) {
+      detail.monthly = await sendOperatorDigest(now);
+    }
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+  return { ok: true, detail: { ...detail, skipped: Object.keys(detail).length === 0 } };
 }
 
 async function runMailboxPoll(): Promise<JobResult> {
@@ -268,6 +331,35 @@ async function runAnnouncementsPublishSweep(): Promise<JobResult> {
   } catch (e) {
     return { ok: false, detail: { error: String(e).slice(0, 300) } };
   }
+}
+
+/** G-01 — drain the audit dead-letter file back into audit_logs. */
+async function runAuditDlqReplay(): Promise<JobResult> {
+  try {
+    const { replayAuditDeadLetters } = await import("@/lib/audit");
+    const r = await replayAuditDeadLetters();
+    // found === 0 is the steady state; not a failure.
+    return { ok: r.failed === 0, detail: { found: r.found, replayed: r.replayed, failed: r.failed } };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** G-08 — deliver due webhook retries (exponential backoff, 6 tries). */
+async function runWebhookRetrySweep(): Promise<JobResult> {
+  try {
+    const { sweepWebhookRetries } = await import("@/modules/webhooks/service");
+    const r = await sweepWebhookRetries();
+    return { ok: true, detail: { ...r } };
+  } catch (e) {
+    return { ok: false, detail: { error: String(e).slice(0, 300) } };
+  }
+}
+
+/** G-18 — ensure the quarter's access-review obligation exists per tenant. */
+async function runAccessReviewCadence(): Promise<JobResult> {
+  const created = await ensureAccessReviewObligations();
+  return { ok: true, detail: { created } };
 }
 
 // ---------- scheduler ----------

@@ -12,6 +12,7 @@ import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { assertDateInBounds } from "@/lib/date-bounds";
 import { ApiError } from "@/lib/errors";
 import type { AuthContext } from "@/lib/session";
 import { notify } from "@/modules/notifications/service";
@@ -553,7 +554,7 @@ export async function logTime(
     throw ApiError.badRequest("Minutes must be between 1 and 1440");
   }
   const logDate = /^\d{4}-\d{2}-\d{2}$/.test(input.logDate ?? "")
-    ? input.logDate!
+    ? assertDateInBounds(input.logDate!, "log date") // G-30 — reject far past/future/invalid dates
     : new Date().toISOString().slice(0, 10);
 
   const inserted = await db

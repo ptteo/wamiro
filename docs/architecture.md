@@ -1,79 +1,142 @@
-# Wamiro architecture
+# Wamiro — Architecture (IAM, Tenancy, Data Flow)
 
-How the blueprint maps to this codebase, and where v1 deliberately deviates.
+**Status:** living document · created from the G-29 gap-analysis consolidation (2026-09-17).
+Sources: `src/db/schema.ts`, `src/lib/session.ts`, `src/modules/iam/*`, `src/lib/ratelimit.ts`, `docs/project-gaps-and-issues.md`.
 
-## Structure (modular monolith, single deployable)
+---
+
+## 1. Account hierarchy
+
+Who can exist, and how they nest. Platform operators are *outside* every tenant.
 
 ```
-src/
-  app/                 # Next.js App Router
-    (app)/             # authenticated shell: home, people, attendance, leave, admin
-    api/v1/            # versioned API: auth/*, me, people, attendance/clock, leave/*
-    login/, register/  # unauthenticated
-  components/          # design-system primitives + client islands
-  lib/                 # env, db pool, session, password, audit, API wrapper, errors
-  modules/
-    iam/               # permission catalog + pure engine (+ unit tests)
-    org/               # tenant provisioning
-    people/            # directory (scope-filtered)
-    attendance/        # HR-lite clock in/out
-    leave/             # balances, apply, approve/reject
-    home/              # aggregated dashboard queries
-  db/                  # drizzle schema + seed
-docs/                  # deployment + architecture
+Platform (org slug '__platform', id NULL on platform roles/audits)
+│
+├── Platform operator (super admin)
+│     └── holds NULL-org roles → /platform console only
+│           - manages orgs, billing status, entitlements
+│           - consent-gated impersonation ONLY (tenant must grant; ledgered)
+│
+└── Tenants (organizations.status: active | trial | past_due | suspended …)
+      │
+      ├── Org admin (roles: 'admin', holds users.manage / roles.manage / audit.view)
+      │     ├── manages users, roles, overrides, security, storage, integrations
+      │     └── grants consent for platform impersonation
+      │
+      ├── Manager (role 'manager' or permission-scoped)
+      │     └── team-scoped access via scope families (employees.view@team …)
+      │
+      └── Member (base 'member' role; self-service only)
+            └── requests, tickets, payslips, documents, notifications
 ```
 
-This is the blueprint's `apps/web + apps/api + packages/*` collapsed into one
-Node process — approved for v1 because the target is a single Lightsail box.
-Domain boundaries are the `modules/` folders; promoting any of them to a
-service later means moving a folder, not rewriting it.
+Key rules:
 
-## Tenancy
+- A **user row belongs to exactly one org** (`users.organization_id NOT NULL`). Cross-org identity
+  (same email in two tenants) is a known long-term tension — see G-12 residual in the gap doc.
+- **Roles** are org-scoped; the `roles_org_key` unique index is NULL-distinct (see G-23 note in
+  `src/db/schema.ts`): one role per `(org, key)` per tenant, platform rows exempt.
+- **Overrides** (`allow`/`deny` + scope + expiry) are temporary grants layered by the pure engine;
+  `deny` wins over everything (deny-wins precedence).
 
-- `organizations` is the tenant root; every business table carries
-  `organization_id` with FK + index.
-- Tenant context resolution: session token → sessions → users → organization.
-  Client input can never set organization context (blueprint §17).
-- All module queries take `AuthContext` and filter by
-  `ctx.user.organizationId`. There are no repository escape hatches; raw SQL
-  fragments interpolate the same id from ctx.
-- Platform-level rows (platform roles, platform audits) use NULL
-  organization_id and live behind `platform.admin`.
+## 2. Access computation (pure IAM engine)
 
-## Authorization
+`computeEffectiveAccess` in `src/modules/iam/engine.ts` — no DB, fully unit-tested:
 
-- Catalog: `modules/iam/catalog.ts` — permission keys, scopes, system role
-  templates. Roles/grants are DB rows seeded per tenant, so tenants get custom
-  roles without code changes (blueprint §11).
-- Engine (`engine.ts`) is pure: deny > allow override > role grant, expired
-  overrides ignored, unknown permission keys never grant. Unit-tested.
-- Scopes resolve data filters per domain (e.g. attendance list SELF vs TEAM vs
-  COMPANY). TEAM = direct reports via `employees.manager_user_id`.
-- Enforcement points: UI nav (cosmetic), page guard `requireAuthPage()`, API
-  wrapper `route({permission})`, and scope-filtered queries (defense in depth,
-  blueprint §93).
+```
+        userRoles (org roles)          overrides (allow/deny, scope, expiry)
+              │                                  │
+              ▼                                  ▼
+        base permission set ──────►  overlay: deny strips, allow adds
+              │                                  │
+              ▼                                  ▼
+        scope widening (team/dept/company) ◄─ deny-wins
+              │
+              ▼
+   effective access: permission → widest scope
+   unknown permission requested → DENIED (hardening default)
+```
 
-## Sessions & auth
+`can(access, "perm")` and `widestScope(access, "perm.family")` are the only two predicates the
+whole app uses to gate anything.
 
-scrypt (node stdlib) passwords; 256-bit random tokens stored as SHA-256;
-httpOnly/SameSite=Lax/Secure cookies; origin check on mutations (CSRF);
-per-instance rate limiting on login/register; audit on logins, org creation,
-leave lifecycle, attendance.
+## 3. Request → response data flow (write path)
 
-## Deviations from blueprint (v1, all reversible)
+```
+Browser ──fetch──► /api/v1/<route> route.ts
+                    │
+                    ├─ route() wrapper (src/lib/api.ts):
+                    │    1. CSRF: Sec-Fetch-Site cross-site rejected (G-11);
+                    │       Origin check fallback for non-browser clients
+                    │    2. rate limit (G-04: 1s-aggregated DB writes,
+                    │       per-instance local floor if DB down)
+                    │    3. requireAuth → AuthContext (session cookie →
+                    │       sessions JOIN users JOIN organizations; user must
+                    │       be org member, status active)
+                    │
+                    ├─ service fn (src/modules/<m>/service.ts):
+                    │    - can(ctx.access, …) permission gate
+                    │    - org-scoped WHERE on every query
+                    │    - mutation + audit(...) (G-01: bounded retry →
+                    │      DLQ file → 15-min replay job; never throws)
+                    │    - post-commit side effects: notify(), emit(),
+                    │      webhooks (G-08: ledger + retry sweep)
+                    │
+                    └─ withTenantScope(ctx.org.id, tx) around raw multi-tenant
+                         SQL when used: sets app.org_id GUC → RLS policies
+                         enforce; connection destroyed on error (no GUC leaks)
+```
 
-| Blueprint              | v1 reality                          | Why                          | Seam back |
-| ---------------------- | ----------------------------------- | ---------------------------- | --------- |
-| Next.js + NestJS       | Single Next.js app, `/api/v1` routes | One Lightsail box           | Extract modules/ to NestJS |
-| Keycloak identity      | Built-in sessions                   | JVM won't fit small instance | Swap loadAuthContext for OIDC callback |
-| Frappe HR + Zammad     | Fully native HR/support modules (people, attendance, leave, payroll, shifts, tickets, SLA, email intake) | No second hosting dependency; adapters removed in the Phase 6 cutover | Registry (`src/lib/providers/registry.ts`) if a future adapter is ever wanted |
-| Meilisearch/MinIO/etc. | Not yet                             | Phased per blueprint §88     | Add when phase reached |
+## 4. Page-render data flow (read path)
 
-## Known v1 limits (tracked)
+```
+GET /<page> ──► RSC page.tsx
+                 ├─ requireAuthPage() → AuthContext (same as API path)
+                 ├─ Promise.all of module service reads (G-21: one RTT)
+                 ├─ every read org-scoped at the module layer
+                 │    (pages render OUTSIDE the ALS scope — RSC streaming —
+                 │     so RLS second wall applies to API writes; page reads
+                 │     rely on module discipline, guarded by the CI wall
+                 │     src/tests/page-db-guard.test.ts — G-05)
+                 └─ serialize props → client islands (instant local filtering;
+                    server search via ?q= for big tables — G-20)
+```
 
-- In-memory rate limits (single-instance assumption) — move to shared store
-  before horizontal scaling.
-- DEPARTMENT scope treated as COMPANY for attendance listing until department
-  subtree filtering ships with the Access Control Center phase.
-- No notifications/announcements yet (next phase); no MFA yet — schema-ready,
-  add TOTP at the Access Control Center phase.
+## 5. Audit & retention pipeline
+
+```
+mutation ──► audit() ─► INSERT audit_logs ─┬─► /admin/audit (keyset pages, G-03)
+                                           ├─► CSV export (current page only, G-27)
+                                           └─► retention_sweep (12h, G-02):
+                                                 archive to JSONL month files
+                                                 → THEN bounded delete (5000/run)
+failure ─► retry ─► DLQ file ─► audit_dlq_replay job (15 min) ─► re-INSERT
+```
+
+## 6. Background jobs
+
+One worker (`npm run jobs:worker`) ticks a registry (`src/modules/platform/jobs.ts`);
+every run lands in `platform_job_runs` and health checks read it (stalled scheduler
+= alerting condition). Current registry: sla_sweep, trial_sweep, dunning_sweep,
+request_escalation, governance_sweep, mailbox_poll, usage/health rollups, alert
+evaluator, email/operator digests, retention_sweep, deletion_sweep, cleanup_orphans,
+attendance/documents/assets/work/announcements sweeps, audit_dlq_replay (G-01),
+webhook_retry_sweep (G-08), access_review_cadence (G-18).
+
+All sweeps are idempotent and bounded — overlapping ticks are harmless.
+
+## 7. Storage layer
+
+- Primary: S3-compatible (R2) when `S3_*` env set; fallback: local disk under
+  `WAMIRO_DATA_DIR` (`tenant/{orgId}/{category}/{uuid}-{name}` keys).
+- `resolveLocalKey()` (G-22) proves every key resolves inside ROOT via
+  `resolve` + `path.relative` — no `..` escapes, absolute keys rejected.
+- Usage listing bounded at `USAGE_LIST_CAP` with honest `truncated` flag (G-09).
+
+## 8. Time & payroll
+
+- Orgs carry `timezone` + `workweek_start` (G-17, migration 0069).
+- Proration CTE generates per-day rows in org-local time and masks working days
+  via `src/modules/payroll/workweek.ts` (Mon–Fri default, Sunday-start supported).
+- All user-supplied dates (time logs, bookings) pass `src/lib/date-bounds.ts`
+  (G-30): real calendar dates, floor 2000-01-01, max ~2y future.

@@ -53,7 +53,15 @@ export function route(
     try {
       startedAt = Date.now();
       // CSRF hardening: state-changing requests must be same-origin.
+      // G-11: Origin is optional (non-browser clients omit it), so Origin-only
+      // checking let a same-site subdomain attacker through. Modern browsers
+      // always send Sec-Fetch-Site — when present it MUST be same-origin/
+      // same-site/none; when absent we fall back to the Origin check.
       if (req.method !== "GET" && req.method !== "HEAD") {
+        const fetchSite = req.headers.get("sec-fetch-site");
+        if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "same-site" && fetchSite !== "none") {
+          throw ApiError.forbidden("Cross-site request rejected");
+        }
         const origin = req.headers.get("origin");
         if (origin) {
           const host = req.headers.get("host");
@@ -90,7 +98,15 @@ export function route(
         // Shared (DB-backed) so it holds across instances. Reads are exempt
         // to keep the DB write cost off the hot GET path.
         if (req.method !== "GET" && req.method !== "HEAD") {
-          const orgLimit = Number(process.env.RATE_LIMIT_ORG_PER_MIN ?? 600);
+          // Phase F — per-org limit.api_per_min entitlement overrides the
+          // default (60 s cache; fail-open to the default on any error).
+          let orgLimit = Number(process.env.RATE_LIMIT_ORG_PER_MIN ?? 600);
+          try {
+            const { apiRateOverride } = await import("@/modules/platform/entitlements");
+            orgLimit = (await apiRateOverride(auth.user.organizationId)) ?? orgLimit;
+          } catch {
+            /* entitlement read is best-effort */
+          }
           await enforceRateLimit("org", auth.user.organizationId, {
             limit: orgLimit,
             windowSeconds: 60,

@@ -4,12 +4,18 @@ import { z } from "zod";
 import { route } from "@/lib/api";
 import { ApiError } from "@/lib/errors";
 import {
+  createCredit,
   createManualInvoice,
+  listCredits,
   listInvoices,
   recordPayment,
 } from "@/modules/platform/billing-ledger";
 
-/** Phase B-fix — the unified billing ledger (Paddle mirrors + manual invoices). */
+/**
+ * Phase B-fix — the unified billing ledger (Paddle mirrors + manual invoices)
+ * plus the credits ledger. All ops are platform.admin-gated; mutations carry
+ * the operator's audit trail with the reason attached.
+ */
 export const GET = route(
   async (req, { auth }) => {
     const sp = req.nextUrl.searchParams;
@@ -17,6 +23,9 @@ export const GET = route(
       invoices: await listInvoices(auth, {
         orgId: sp.get("orgId") ?? undefined,
         status: sp.get("status") ?? undefined,
+      }),
+      credits: await listCredits(auth, {
+        orgId: sp.get("orgId") ?? undefined,
       }),
     });
   },
@@ -34,6 +43,7 @@ const invoiceSchema = z.object({
     .array(z.object({ desc: z.string().min(1).max(300), qty: z.number().int().min(1), unitCents: z.number().int().min(0) }))
     .min(1)
     .max(50),
+  reason: z.string().trim().min(5).max(500),
 });
 
 const paymentSchema = z.object({
@@ -45,9 +55,17 @@ const paymentSchema = z.object({
   providerRef: z.string().max(200).nullable().optional(),
 });
 
-const bodySchema = z.discriminatedUnion("op", [invoiceSchema, paymentSchema]);
+const creditSchema = z.object({
+  op: z.literal("create_credit"),
+  orgId: z.string().uuid(),
+  amountCents: z.number().int().min(1),
+  reason: z.string().trim().min(5).max(500),
+  expiresAt: z.string().datetime().nullable().optional(),
+});
 
-/** POST ?op=create_invoice | ?op=record_payment */
+const bodySchema = z.discriminatedUnion("op", [invoiceSchema, paymentSchema, creditSchema]);
+
+/** POST ?op=create_invoice | ?op=record_payment | ?op=create_credit */
 export const POST = route(
   async (req: NextRequest, { auth }) => {
     const op = req.nextUrl.searchParams.get("op");
@@ -58,6 +76,11 @@ export const POST = route(
       if (op && op !== "create_invoice") throw ApiError.badRequest("op mismatch");
       const row = await createManualInvoice(auth, parsed.data);
       return NextResponse.json({ ok: true, invoice: { id: row.id, number: row.number, amountCents: row.amountCents } }, { status: 201 });
+    }
+    if (parsed.data.op === "create_credit") {
+      if (op && op !== "create_credit") throw ApiError.badRequest("op mismatch");
+      const row = await createCredit(auth, parsed.data);
+      return NextResponse.json({ ok: true, credit: { id: row.id, amountCents: row.amountCents } }, { status: 201 });
     }
     if (op && op !== "record_payment") throw ApiError.badRequest("op mismatch");
     const result = await recordPayment(auth, parsed.data);

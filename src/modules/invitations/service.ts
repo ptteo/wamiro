@@ -428,28 +428,131 @@ export async function previewImport(ctx: AuthContext, rows: ImportRow[]) {
   return { preview, errors, count: rows.length };
 }
 
+/**
+ * G-10 — CSV import commits atomically.
+ *
+ * The old loop called `createInvitation` per row: a failure at row 800 left
+ * 799 invites committed with no rollback and no report. Now every row is
+ * created inside ONE transaction — any failure rolls the whole import back —
+ * and the per-row side effects (invite emails, webhooks, seat sync) fire
+ * only after the transaction commits, so a rollback can never leave a
+ * half-announced state.
+ */
 export async function commitImport(ctx: AuthContext, rows: ImportRow[]) {
   const { preview, errors } = await previewImport(ctx, rows);
   if (errors.length) throw ApiError.badRequest("Fix the highlighted rows before committing", { errors });
-  const created: { email: string; userId: string }[] = [];
-  for (const row of preview) {
-    let managerUserId: string | undefined;
-    if (row.managerEmail) {
-      const [m] = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(and(eq(users.organizationId, ctx.user.organizationId), eq(users.email, row.managerEmail)))
-        .limit(1);
-      managerUserId = m?.id;
-    }
-    const r = await createInvitation(ctx, {
-      name: row.name,
-      email: row.email,
-      roleKey: row.roleKey,
-      managerUserId,
+  if (preview.length === 0) return { created: 0 };
+
+  // Import-specific rate limit: one check for the whole batch, scaled to its
+  // size (previously the per-row invite cap miscounted batches).
+  try {
+    await enforceRateLimit("org", `import:${ctx.user.organizationId}`, {
+      limit: Math.min(1000, Number(process.env.IMPORT_MAX_ROWS_PER_HOUR ?? 1000)),
+      windowSeconds: 3600,
     });
-    created.push({ email: row.email, userId: r.userId });
+  } catch {
+    throw ApiError.rateLimited("Import rate limit reached — try again within the hour.");
   }
+  await assertSeatAvailable(ctx); // hard pre-check; billing sync re-validates after commit
+
+  const orgId = ctx.user.organizationId;
+  const created: { email: string; userId: string; inviteId: string; inviteUrl: string; roleKey: string }[] =
+    await db.transaction(async (tx) => {
+      // Roles resolved once per distinct key inside the tx.
+      const roleIds = new Map<string, string>();
+      for (const key of new Set(preview.map((r) => r.roleKey))) {
+        const [role] = await tx
+          .select({ id: roles.id })
+          .from(roles)
+          .where(and(eq(roles.organizationId, orgId), eq(roles.key, key)))
+          .limit(1);
+        if (!role) throw ApiError.badRequest(`Unknown role for your organization: ${key}`);
+        roleIds.set(key, role.id);
+      }
+
+      // Managers may be existing members or other rows in this batch.
+      const managerRows = await tx
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(eq(users.organizationId, orgId));
+      const knownEmails = new Map(managerRows.map((m) => [m.email, m.id] as const));
+      for (const r of preview) knownEmails.set(r.email, ""); // reserved by this batch (id assigned at insert)
+
+      const out: { email: string; userId: string; inviteId: string; inviteUrl: string; roleKey: string }[] = [];
+      for (const row of preview) {
+        const managerUserId = row.managerEmail ? (knownEmails.get(row.managerEmail) || undefined) : undefined;
+        const passwordHash = await hashPassword(randomBytes(32).toString("base64url"));
+        const [user] = await tx
+          .insert(users)
+          .values({ organizationId: orgId, email: row.email, name: row.name, passwordHash, status: "invited" })
+          .returning({ id: users.id });
+        if (!user) throw new Error(`user insert failed: ${row.email}`);
+        await tx.insert(userRoles).values({ userId: user.id, roleId: roleIds.get(row.roleKey)! });
+        await tx.insert(organizationMemberships).values({ userId: user.id, organizationId: orgId });
+        await tx.insert(employees).values({
+          organizationId: orgId,
+          userId: user.id,
+          jobTitle: "Employee",
+          managerUserId: managerUserId && managerUserId !== "" ? managerUserId : undefined,
+        });
+        const raw = newSessionToken();
+        const [invite] = await tx
+          .insert(invitationTokens)
+          .values({
+            organizationId: orgId,
+            tokenHash: hashToken(raw),
+            email: row.email,
+            name: row.name,
+            roleKey: row.roleKey,
+            invitedBy: ctx.user.id,
+            managerUserId: managerUserId && managerUserId !== "" ? managerUserId : undefined,
+            userId: user.id,
+            expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+          })
+          .returning({ id: invitationTokens.id });
+        knownEmails.set(row.email, user.id); // later rows can reference this manager
+        out.push({ email: row.email, userId: user.id, inviteId: invite!.id, inviteUrl: acceptUrlFor(raw), roleKey: row.roleKey });
+      }
+
+      // Second pass: patch forward references — a row whose manager appears
+      // LATER in the batch was inserted before the manager id existed.
+      for (const row of preview) {
+        if (!row.managerEmail) continue;
+        const managerId = knownEmails.get(row.managerEmail);
+        if (!managerId || managerId === "") continue;
+        await tx
+          .update(employees)
+          .set({ managerUserId: managerId })
+          .where(
+            and(
+              eq(employees.organizationId, orgId),
+              eq(employees.userId, knownEmails.get(row.email) ?? ""),
+            ),
+          );
+      }
+      return out;
+    });
+
+  // Post-commit fan-out — never blocks the response, never rolls back data.
+  for (const c of created) {
+    void sendInviteLinkEmail({
+      to: c.email,
+      orgName: ctx.org.name,
+      inviterName: ctx.user.name,
+      acceptUrl: c.inviteUrl,
+    }).catch(() => {});
+    void audit({
+      organizationId: orgId,
+      actorUserId: ctx.user.id,
+      action: "USER_INVITED",
+      entityType: "user",
+      entityId: c.userId,
+      newValue: { email: c.email, roleKey: c.roleKey, via: "csv_import" },
+    }).catch(() => {});
+    void emit(orgId, "user.created", "user", c.userId, ctx.user.id, { email: c.email }).catch(() => {});
+  }
+  void import("@/modules/billing/service").then(({ syncSeatsAfterInvite }) => syncSeatsAfterInvite(orgId));
+
   return { created: created.length };
 }
 

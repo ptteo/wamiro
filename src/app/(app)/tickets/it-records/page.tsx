@@ -26,7 +26,10 @@ export default async function ItRecordsPage({
       </Card>
     );
   }
-  const [records, openTickets] = await Promise.all([listRecords(ctx, type), listTickets(ctx)]);
+  const [records, openTickets] = await Promise.all([
+    listRecords(ctx, type),
+    listTickets(ctx).then((r) => r.tickets),
+  ]);
   return (
     <div className="space-y-6">
       <PageHeader
