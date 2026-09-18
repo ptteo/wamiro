@@ -12,3 +12,4 @@ next-env.d.ts
 *.log
 e2e-out.txt
 goals-dump*.html
+docs/

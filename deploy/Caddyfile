@@ -1,0 +1,16 @@
+# Copy to /etc/caddy/Caddyfile on the Lightsail instance.
+# DNS A record: work-portal.howdyanalytics.com -> your static IPv4 (e.g. 3.108.66.250)
+
+{
+	servers {
+		trusted_proxies static 127.0.0.1/32
+	}
+}
+
+work-portal.howdyanalytics.com {
+	reverse_proxy 127.0.0.1:3000
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options DENY
+	}
+}
