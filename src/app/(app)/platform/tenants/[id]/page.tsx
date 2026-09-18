@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
-import Link from "next/link";
 import { PlatformTenant360 } from "@/components/platform-tenant-360";
+import { PlatformShell, PlatformPageHeader } from "@/components/platform-sub-nav";
 import { Card, EmptyState } from "@/components/ui";
 import { requireAuthPage, can } from "@/lib/page-auth";
 import {
@@ -39,20 +39,21 @@ export default async function PlatformTenantPage({ params }: { params: Promise<{
   ]);
 
   return (
-    <div className="space-y-4" data-fill-workspace>
-      <nav className="text-xs text-tertiary">
-        <Link href="/platform" className="hover:text-secondary hover:underline">
-          ← Platform console
-        </Link>
-      </nav>
-      <PlatformTenant360
-        overview={overview}
-        usage={usage}
-        billing={billing}
-        support={support}
-        access={access}
-        timeline={timeline}
-      />
-    </div>
+    <PlatformShell current="/platform">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <PlatformPageHeader
+          title={overview.name}
+          lede={`Tenant 360 — /${overview.slug} · ${overview.planName} · ${overview.billingStatus}`}
+        />
+        <PlatformTenant360
+          overview={overview}
+          usage={usage}
+          billing={billing}
+          support={support}
+          access={access}
+          timeline={timeline}
+        />
+      </div>
+    </PlatformShell>
   );
 }

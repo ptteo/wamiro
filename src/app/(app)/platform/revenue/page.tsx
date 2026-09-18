@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { PlatformRevenueCard } from "@/components/platform-revenue-card";
+import { PlatformShell, PlatformPageHeader } from "@/components/platform-sub-nav";
 import { Card, EmptyState } from "@/components/ui";
 import { requireAuthPage, can } from "@/lib/page-auth";
 import { churnByReason, invoiceAging, mrrWaterfall, renewalForecast, revenueKpis } from "@/modules/platform/revenue";
@@ -26,14 +27,14 @@ export default async function PlatformRevenuePage() {
   ]);
 
   return (
-    <div className="space-y-4" data-fill-workspace>
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight text-primary">Revenue</h1>
-        <p className="mt-1 text-sm text-secondary">
-          Collected revenue (ledger-authoritative), forward-looking MRR (seats × price snapshots), MRR movement, aging and renewals.
-        </p>
-      </header>
-      <PlatformRevenueCard kpis={kpis} waterfall={waterfall} aging={aging} renewals={renewals} churnReasons={churnReasons} />
-    </div>
+    <PlatformShell current="/platform/revenue">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <PlatformPageHeader
+          title="Revenue"
+          lede="Collected revenue (ledger-authoritative), forward-looking MRR (seats × price snapshots), MRR movement, aging and renewals."
+        />
+        <PlatformRevenueCard kpis={kpis} waterfall={waterfall} aging={aging} renewals={renewals} churnReasons={churnReasons} />
+      </div>
+    </PlatformShell>
   );
 }
